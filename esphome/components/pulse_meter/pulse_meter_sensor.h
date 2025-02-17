@@ -5,10 +5,8 @@
 #include "esphome/core/hal.h"
 #include "driver/pcnt.h"
 #include "soc/pcnt_struct.h"
-#include "esp_timer.h"
 #include "driver/timer.h"
-#include "driver/gpio.h"
-#include "driver/periph_ctrl.h"
+#include "driver/gptimer.h"
 
 namespace esphome {
 namespace pulse_meter {
