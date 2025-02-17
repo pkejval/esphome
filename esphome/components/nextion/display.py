@@ -21,6 +21,7 @@ from .base_component import (
     CONF_ON_SLEEP,
     CONF_ON_WAKE,
     CONF_SKIP_CONNECTION_HANDSHAKE,
+    CONF_SKIP_SETUP_REBOOT,
     CONF_START_UP_PAGE,
     CONF_TFT_URL,
     CONF_TOUCH_SLEEP_TIMEOUT,
@@ -88,6 +89,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_AUTO_WAKE_ON_TOUCH, default=True): cv.boolean,
             cv.Optional(CONF_EXIT_REPARSE_ON_START, default=False): cv.boolean,
             cv.Optional(CONF_SKIP_CONNECTION_HANDSHAKE, default=False): cv.boolean,
+            cv.Optional(CONF_SKIP_SETUP_REBOOT, default=False): cv.boolean,
         }
     )
     .extend(cv.polling_component_schema("5s"))
@@ -157,6 +159,8 @@ async def to_code(config):
     cg.add(var.set_exit_reparse_on_start(config[CONF_EXIT_REPARSE_ON_START]))
 
     cg.add(var.set_skip_connection_handshake(config[CONF_SKIP_CONNECTION_HANDSHAKE]))
+
+    cg.add(var.set_skip_setup_reboot(config[CONF_SKIP_SETUP_REBOOT]))
 
     await display.register_display(var, config)
 
