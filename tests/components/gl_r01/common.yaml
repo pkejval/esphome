@@ -1,0 +1,9 @@
+i2c:
+  - id: i2c_gl_r01
+    scl: ${scl_pin}
+    sda: ${sda_pin}
+
+sensor:
+  - platform: gl_r01
+    name: Distance sensor
+    update_interval: 5s
