@@ -1,6 +1,8 @@
+// pulse_meter_sensor.cpp
 #include "pulse_meter_sensor.h"
 #include "esphome/core/log.h"
-#include <inttypes.h>
+#include <esp_timer.h>
+#include <freertos/queue.h>
 
 namespace esphome {
 namespace pulse_meter {
@@ -8,140 +10,100 @@ namespace pulse_meter {
 static const char *const TAG = "pulse_meter";
 
 void PulseMeterSensor::set_total_pulses(uint32_t pulses) {
-  this->total_pulses_ = pulses;
-  if (this->total_sensor_ != nullptr) {
-    this->total_sensor_->publish_state(this->total_pulses_);
-  }
+    total_pulses_ = pulses;
+    if(total_sensor_) total_sensor_->publish_state(total_pulses_);
 }
 
 void PulseMeterSensor::setup() {
-  this->pin_->setup();
-  this->isr_pin_ = pin_->to_isr();
-  // Add this task to the watchdog for increased reliability
-  esp_task_wdt_add(nullptr);
-  // Use high-resolution timer from ESP-IDF
-  this->last_processed_edge_us_ = (uint32_t)esp_timer_get_time();
+    // Configure hardware pulse counter
+    pcnt_config_t pcnt_config = {
+        .pulse_gpio_num = pin_->get_pin(),
+        .ctrl_gpio_num = PCNT_PIN_NOT_USED,
+        .lctrl_mode = PCNT_MODE_KEEP,
+        .hctrl_mode = PCNT_MODE_KEEP,
+        .pos_mode = PCNT_COUNT_INC,
+        .neg_mode = PCNT_COUNT_DIS,
+        .counter_h_lim = 10000,
+        .counter_l_lim = 0,
+        .unit = pcnt_unit_,
+        .channel = pcnt_channel_,
+    };
+    
+    ESP_ERROR_CHECK(pcnt_unit_config(&pcnt_config));
+    ESP_ERROR_CHECK(pcnt_filter_enable(pcnt_unit_));
+    ESP_ERROR_CHECK(pcnt_set_filter_value(pcnt_unit_, filter_us_ * 80)); // APB_CLK is 80MHz
+    ESP_ERROR_CHECK(pcnt_counter_pause(pcnt_unit_));
+    ESP_ERROR_CHECK(pcnt_counter_clear(pcnt_unit_));
+    ESP_ERROR_CHECK(pcnt_intr_enable(pcnt_unit_));
+    ESP_ERROR_CHECK(pcnt_event_enable(pcnt_unit_, PCNT_EVT_H_LIM));
+    ESP_ERROR_CHECK(pcnt_counter_resume(pcnt_unit_));
 
-  if (this->filter_mode_ == FILTER_EDGE) {
-    this->pin_->attach_interrupt(PulseMeterSensor::edge_intr, this, gpio::INTERRUPT_RISING_EDGE);
-  } else if (this->filter_mode_ == FILTER_PULSE) {
-    // Read the current pin state to avoid false triggers
-    this->pulse_state_.last_pin_val_ = this->isr_pin_.digital_read();
-    this->pulse_state_.latched_ = this->pulse_state_.last_pin_val_;
-    this->pin_->attach_interrupt(PulseMeterSensor::pulse_intr, this, gpio::INTERRUPT_ANY_EDGE);
-  }
+    // Create event queue and task
+    event_queue_ = xQueueCreate(10, sizeof(uint32_t));
+    xTaskCreatePinnedToCore(
+        [](void *arg) {
+            PulseMeterSensor *sensor = static_cast<PulseMeterSensor*>(arg);
+            while(true) {
+                uint32_t count;
+                if(xQueueReceive(sensor->event_queue_, &count, portMAX_DELAY)) {
+                    sensor->process_pulses();
+                }
+            }
+        }, 
+        "pulse_task", 4096, this, 5, &task_handle_, PRO_CPU_NUM);
+
+    // Configure timeout timer
+    esp_timer_create_args_t timer_args = {
+        .callback = [](void *arg) {
+            PulseMeterSensor *sensor = static_cast<PulseMeterSensor*>(arg);
+            sensor->publish_state(0.0f);
+        },
+        .arg = this,
+        .name = "pulse_timeout"
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer_handle_));
+}
+
+void IRAM_ATTR PulseMeterSensor::isr_handler(void *arg) {
+    PulseMeterSensor *sensor = static_cast<PulseMeterSensor*>(arg);
+    uint32_t count;
+    pcnt_get_counter_value(sensor->pcnt_unit_, &count);
+    sensor->pulse_count_ += count;
+    sensor->last_edge_us_ = esp_timer_get_time();
+    pcnt_counter_clear(sensor->pcnt_unit_);
+    
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xQueueSendFromISR(sensor->event_queue_, &count, &xHigherPriorityTaskWoken);
+    if(xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
+}
+
+void PulseMeterSensor::process_pulses() {
+    const uint32_t count = pulse_count_.exchange(0);
+    if(count > 0) {
+        total_pulses_ += count;
+        const uint32_t now = esp_timer_get_time();
+        const uint32_t period = now - last_edge_us_;
+        
+        if(total_sensor_) total_sensor_->publish_state(total_pulses_);
+        publish_state((60.0f * 1000000.0f * count) / period);
+        
+        // Reset timeout timer
+        esp_timer_stop(timer_handle_);
+        ESP_ERROR_CHECK(esp_timer_start_once(timer_handle_, timeout_us_));
+    }
 }
 
 void PulseMeterSensor::loop() {
-  const uint32_t now = (uint32_t)esp_timer_get_time();
-
-  // Clear count in the "get" state before swapping pointers with "set"
-  this->get_->count_ = 0;
-  auto *temp = this->set_;
-  this->set_ = this->get_;
-  this->get_ = temp;
-
-  // Process any peeked edge if it was previously detected
-  if (this->peeked_edge_ && this->get_->count_ > 0) {
-    this->peeked_edge_ = false;
-    this->get_->count_--;
-  }
-
-  // If the filter time has passed after the last rising edge, count it as a valid edge.
-  if ((this->get_->last_rising_edge_us_ != this->get_->last_detected_edge_us_) &&
-      (now - this->get_->last_rising_edge_us_ >= this->filter_us_)) {
-    this->peeked_edge_ = true;
-    this->get_->last_detected_edge_us_ = this->get_->last_rising_edge_us_;
-    this->get_->count_++;
-  }
-
-  // Process new pulses if any were recorded in this loop iteration.
-  if (this->get_->count_ > 0) {
-    if (this->total_sensor_ != nullptr) {
-      this->total_pulses_ += this->get_->count_;
-      uint32_t total = this->total_pulses_;
-      this->total_sensor_->publish_state(total);
-    }
-    switch (this->meter_state_) {
-      case MeterState::INITIAL:
-      case MeterState::TIMED_OUT:
-        this->meter_state_ = MeterState::RUNNING;
-        break;
-      case MeterState::RUNNING: {
-        uint32_t delta_us = this->get_->last_detected_edge_us_ - this->last_processed_edge_us_;
-        float pulse_width_us = delta_us / float(this->get_->count_);
-        ESP_LOGV(TAG, "New pulse, delta: %" PRIu32 " µs, count: %" PRIu32 ", width: %.5f µs",
-                 delta_us, this->get_->count_, pulse_width_us);
-        float pulses_per_minute = (60.0f * 1000000.0f) / pulse_width_us;
-        this->publish_state(pulses_per_minute);
-      } break;
-    }
-    this->last_processed_edge_us_ = this->get_->last_detected_edge_us_;
-  } else {
-    // If no pulse is detected, check for timeout to report 0 pulses/min.
-    uint32_t time_since_valid_edge_us = now - this->last_processed_edge_us_;
-    switch (this->meter_state_) {
-      case MeterState::INITIAL:
-      case MeterState::RUNNING:
-        if (time_since_valid_edge_us > this->timeout_us_) {
-          this->meter_state_ = MeterState::TIMED_OUT;
-          ESP_LOGD(TAG, "No pulse detected for %" PRIu32 " s, assuming 0 pulses/min", time_since_valid_edge_us / 1000000);
-          this->publish_state(0.0f);
-        }
-        break;
-      default:
-        break;
-    }
-  }
-  // Refresh the watchdog timer each loop.
-  esp_task_wdt_reset();
-}
-
-float PulseMeterSensor::get_setup_priority() const { 
-  return setup_priority::DATA;
+    // Watchdog reset for long operations
+    esp_task_wdt_reset();
 }
 
 void PulseMeterSensor::dump_config() {
-  LOG_SENSOR("", "Pulse Meter", this);
-  LOG_PIN("  Pin: ", this->pin_);
-  if (this->filter_mode_ == FILTER_EDGE) {
-    ESP_LOGCONFIG(TAG, "  Filtering rising edges less than %" PRIu32 " µs apart", this->filter_us_);
-  } else {
-    ESP_LOGCONFIG(TAG, "  Filtering pulses shorter than %" PRIu32 " µs", this->filter_us_);
-  }
-  ESP_LOGCONFIG(TAG, "  Assuming 0 pulses/min after not receiving a pulse for %" PRIu32 " s", this->timeout_us_ / 1000000);
+    LOG_SENSOR("", "Pulse Meter", this);
+    LOG_PIN(" Pin: ", pin_);
+    ESP_LOGCONFIG(TAG, " Filter: %" PRIu32 " µs", filter_us_);
+    ESP_LOGCONFIG(TAG, " Timeout: %" PRIu32 "s", timeout_us_ / 1000000);
 }
 
-void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
-  // Use ESP-IDF high-resolution timer for consistency.
-  const uint32_t now = (uint32_t)esp_timer_get_time();
-  auto &state = sensor->edge_state_;
-  auto &set = *sensor->set_;
-  if ((now - state.last_sent_edge_us_) >= sensor->filter_us_) {
-    state.last_sent_edge_us_ = now;
-    set.last_detected_edge_us_ = now;
-    set.last_rising_edge_us_ = now;
-    set.count_++;
-  }
-}
-
-void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
-  const uint32_t now = (uint32_t)esp_timer_get_time();
-  const bool pin_val = sensor->isr_pin_.digital_read();
-  auto &state = sensor->pulse_state_;
-  auto &set = *sensor->set_;
-  bool length = (now - state.last_intr_) >= sensor->filter_us_;
-  if (length && state.latched_ && !state.last_pin_val_) {
-    state.latched_ = false;
-  } else if (length && !state.latched_ && state.last_pin_val_) {
-    state.latched_ = true;
-    set.last_detected_edge_us_ = state.last_intr_;
-    set.count_++;
-  }
-  set.last_rising_edge_us_ = (!state.latched_ && pin_val) ? now : set.last_detected_edge_us_;
-  state.last_intr_ = now;
-  state.last_pin_val_ = pin_val;
-}
-
-}  // namespace pulse_meter
-}  // namespace esphome
+} // namespace pulse_meter
+} // namespace esphome

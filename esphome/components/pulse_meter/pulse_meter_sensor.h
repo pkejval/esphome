@@ -1,82 +1,60 @@
+// pulse_meter_sensor.h
 #pragma once
 
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
-#include "esphome/core/helpers.h"
-#include "esp_timer.h"
-#include "esp_task_wdt.h"
+#include <atomic>
+#include <driver/gpio.h>
+#include <driver/pcnt.h>
 
 namespace esphome {
 namespace pulse_meter {
 
 class PulseMeterSensor : public sensor::Sensor, public Component {
- public:
-  enum InternalFilterMode {
-    FILTER_EDGE = 0,
-    FILTER_PULSE,
-  };
+public:
+    enum InternalFilterMode {
+        FILTER_EDGE = 0,
+        FILTER_PULSE,
+    };
 
-  void set_pin(InternalGPIOPin *pin) { this->pin_ = pin; }
-  void set_filter_us(uint32_t filter) { this->filter_us_ = filter; }
-  void set_timeout_us(uint32_t timeout) { this->timeout_us_ = timeout; }
-  void set_total_sensor(sensor::Sensor *sensor) { this->total_sensor_ = sensor; }
-  void set_filter_mode(InternalFilterMode mode) { this->filter_mode_ = mode; }
-  void set_total_pulses(uint32_t pulses);
+    void set_pin(InternalGPIOPin *pin) { pin_ = pin; }
+    void set_filter_us(uint32_t filter) { filter_us_ = filter; }
+    void set_timeout_us(uint32_t timeout) { timeout_us_ = timeout; }
+    void set_total_sensor(sensor::Sensor *sensor) { total_sensor_ = sensor; }
+    void set_filter_mode(InternalFilterMode mode) { filter_mode_ = mode; }
+    void set_total_pulses(uint32_t pulses);
+    
+    void setup() override;
+    void loop() override;
+    float get_setup_priority() const override { return setup_priority::DATA; }
+    void dump_config() override;
 
-  void setup() override;
-  void loop() override;
-  float get_setup_priority() const override;
-  void dump_config() override;
+protected:
+    static void IRAM_ATTR isr_handler(void *arg);
+    void process_pulses();
 
- protected:
-  // Optimized ISR functions: minimal, placed in IRAM and marked hot
-  static void IRAM_ATTR edge_intr(PulseMeterSensor *sensor) __attribute__((hot));
-  static void IRAM_ATTR pulse_intr(PulseMeterSensor *sensor) __attribute__((hot));
-
-  // I/O and timing configuration
-  InternalGPIOPin *pin_{nullptr};
-  uint32_t filter_us_ = 0;
-  uint32_t timeout_us_ = 1000000UL * 60UL * 5UL;
-  sensor::Sensor *total_sensor_{nullptr};
-  InternalFilterMode filter_mode_{FILTER_EDGE};
-
-  // Runtime state information
-  enum class MeterState { INITIAL, RUNNING, TIMED_OUT };
-  MeterState meter_state_ = MeterState::INITIAL;
-  bool peeked_edge_ = false;
-  uint32_t total_pulses_ = 0;
-  uint32_t last_processed_edge_us_ = 0;
-
-  // Structure used to pass data from ISR to the main loop.
-  struct State {
-    uint32_t last_detected_edge_us_ = 0;
-    uint32_t last_rising_edge_us_ = 0;
-    uint32_t count_ = 0;
-  };
-
-  // Allocate two state buffers statically to avoid dynamic allocations.
-  State state_[2];
-  volatile State *set_ = state_;
-  volatile State *get_ = state_ + 1;
-
-  // Used exclusively in the ISR.
-  ISRInternalGPIOPin isr_pin_;
-
-  // Filter state for edge mode.
-  struct EdgeState {
-    uint32_t last_sent_edge_us_ = 0;
-  };
-  EdgeState edge_state_{};
-
-  // Filter state for pulse mode.
-  struct PulseState {
-    uint32_t last_intr_ = 0;
-    bool latched_ = false;
-    bool last_pin_val_ = false;
-  };
-  PulseState pulse_state_{};
+    // ESP32 hardware pulse counter configuration
+    pcnt_unit_t pcnt_unit_ = PCNT_UNIT_0;
+    pcnt_channel_t pcnt_channel_ = PCNT_CHANNEL_0;
+    
+    InternalGPIOPin *pin_{nullptr};
+    uint32_t filter_us_{0};
+    uint32_t timeout_us_{30000000}; // 30s default timeout
+    sensor::Sensor *total_sensor_{nullptr};
+    
+    // Atomic counters for lock-free access
+    std::atomic<uint32_t> pulse_count_{0};
+    std::atomic<uint32_t> last_edge_us_{0};
+    std::atomic<uint32_t> total_pulses_{0};
+    
+    // Task handle for core affinity
+    TaskHandle_t task_handle_{nullptr};
+    QueueHandle_t event_queue_{nullptr};
+    
+    // Hardware timer for timeout detection
+    esp_timer_handle_t timer_handle_{nullptr};
 };
 
-}  // namespace pulse_meter
-}  // namespace esphome
+} // namespace pulse_meter
+} // namespace esphome
