@@ -3,9 +3,7 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
-#include "driver/pcnt.h"
 #include "soc/pcnt_struct.h"
-#include "driver/timer.h"
 #include "driver/gptimer.h"
 
 namespace esphome {
@@ -47,7 +45,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   
   // ESP32 hardware resources
   InternalGPIOPin *pin_{nullptr};
-  hw_timer_t *timer_{nullptr};
+  gptimer_handle_t timer_{nullptr};
   portMUX_TYPE timer_mux_ = portMUX_INITIALIZER_UNLOCKED;
   
   // Configuration

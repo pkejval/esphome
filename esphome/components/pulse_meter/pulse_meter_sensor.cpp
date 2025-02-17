@@ -38,33 +38,22 @@ void PulseMeterSensor::setup() {
 }
 
 bool PulseMeterSensor::setup_pcnt() {
-  if (!pin_) return false;
-  
-  // Configure PCNT unit
-  pcnt_config_t config = {
-    .pulse_gpio_num = pin_->get_pin(),
-    .ctrl_gpio_num = PCNT_PIN_NOT_USED,
-    .lctrl_mode = PCNT_MODE_KEEP,
-    .hctrl_mode = PCNT_MODE_KEEP,
-    .pos_mode = PCNT_COUNT_INC,
-    .neg_mode = PCNT_COUNT_DIS,
-    .counter_h_lim = 32767,
-    .counter_l_lim = -32768,
-    .unit = static_cast<pcnt_unit_t>(state_.pcnt_unit),
-    .channel = PCNT_CHANNEL_0,
+  pcnt_unit_config_t unit_config = {
+      .high_limit = 32767,
+      .low_limit = -32768,
   };
+  ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &pcnt_unit_));
   
-  if (pcnt_unit_config(&config) != ESP_OK) return false;
+  pcnt_chan_config_t chan_config = {
+      .edge_gpio_num = pin_->get_pin(),
+      .level_gpio_num = -1,
+  };
+  ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit_, &chan_config, &pcnt_chan_));
   
-  // Configure hardware filter
-  uint16_t filter_val = std::min<unsigned long>(filter_us_ * APB_CLK_FREQ / 1000000, 1023U);
-  if (pcnt_set_filter_value(static_cast<pcnt_unit_t>(state_.pcnt_unit), filter_val) != ESP_OK) return false;
-  if (pcnt_filter_enable(static_cast<pcnt_unit_t>(state_.pcnt_unit)) != ESP_OK) return false;
-  
-  // Configure and start counter
-  if (pcnt_counter_pause(static_cast<pcnt_unit_t>(state_.pcnt_unit)) != ESP_OK) return false;
-  if (pcnt_counter_clear(static_cast<pcnt_unit_t>(state_.pcnt_unit)) != ESP_OK) return false;
-  if (pcnt_counter_resume(static_cast<pcnt_unit_t>(state_.pcnt_unit)) != ESP_OK) return false;
+  pcnt_event_callbacks_t cbs = {
+      .on_reach = pcnt_intr_handler
+  };
+  ESP_ERROR_CHECK(pcnt_unit_register_event_callbacks(pcnt_unit_, &cbs, this));
   
   return true;
 }
