@@ -55,7 +55,7 @@ void PulseMeterSensor::setup() {
 
 void IRAM_ATTR PulseMeterSensor::hw_timer_isr(void *arg) {
   PulseMeterSensor *sensor = static_cast<PulseMeterSensor *>(arg);
-  uint32_t cnt;
+  uint64_t cnt;
   timer_get_counter_value(sensor->timer_group_, sensor->timer_idx_, &cnt);
   timer_set_alarm(sensor->timer_group_, sensor->timer_idx_, cnt + sensor->filter_us_);
   timer_group_clr_intr_status_in_isr(sensor->timer_group_, sensor->timer_idx_);
