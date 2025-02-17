@@ -1,4 +1,3 @@
-// pulse_meter_sensor.h
 #pragma once
 
 #include "esphome/components/sensor/sensor.h"
@@ -7,7 +6,7 @@
 #include "driver/pcnt.h"
 #include "soc/pcnt_struct.h"
 #include "esp_timer.h"
-#include "driver/timer.h"
+#include "esp32-hal-timer.h"
 
 namespace esphome {
 namespace pulse_meter {
