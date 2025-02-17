@@ -44,7 +44,7 @@ void PulseMeterSensor::loop() {
   // Process any peeked edge if it was previously detected
   if (this->peeked_edge_ && this->get_->count_ > 0) {
     this->peeked_edge_ = false;
-    this->get_->count_--;
+    this->get_->count_ = this->get_->count_ - 1;
   }
 
   // If the filter time has passed after the last rising edge, count it as a valid edge.
@@ -52,7 +52,7 @@ void PulseMeterSensor::loop() {
       (now - this->get_->last_rising_edge_us_ >= this->filter_us_)) {
     this->peeked_edge_ = true;
     this->get_->last_detected_edge_us_ = this->get_->last_rising_edge_us_;
-    this->get_->count_++;
+    this->get_->count_ = this->get_->count_ + 1;
   }
 
   // Process new pulses if any were recorded in this loop iteration.
@@ -121,7 +121,7 @@ void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
     state.last_sent_edge_us_ = now;
     set.last_detected_edge_us_ = now;
     set.last_rising_edge_us_ = now;
-    set.count_++;
+    set.count_ = set.count_ + 1;
   }
 }
 
@@ -136,7 +136,7 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   } else if (length && !state.latched_ && state.last_pin_val_) {
     state.latched_ = true;
     set.last_detected_edge_us_ = state.last_intr_;
-    set.count_++;
+    set.count_ = set.count_ + 1;
   }
   set.last_rising_edge_us_ = (!state.latched_ && pin_val) ? now : set.last_detected_edge_us_;
   state.last_intr_ = now;
