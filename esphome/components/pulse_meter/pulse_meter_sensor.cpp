@@ -30,7 +30,7 @@ struct __attribute__((packed)) ESP32State {
   uint8_t rmt_channel;
 };
 
-class ESP32PulseMeterSensor : public Component, public sensor::Sensor {
+class PulseMeterSensor : public Component, public sensor::Sensor {
  private:
   ESP32State state_;
   pcnt_config_t pcnt_config_;
@@ -44,7 +44,7 @@ class ESP32PulseMeterSensor : public Component, public sensor::Sensor {
   portMUX_TYPE timer_mux_ = portMUX_INITIALIZER_UNLOCKED;
 
   static void IRAM_ATTR timer_isr(void *arg) {
-    auto *sensor = static_cast<ESP32PulseMeterSensor *>(arg);
+    auto *sensor = static_cast<PulseMeterSensor *>(arg);
     portENTER_CRITICAL_ISR(&sensor->timer_mux_);
     sensor->handle_timeout();
     portEXIT_CRITICAL_ISR(&sensor->timer_mux_);
@@ -62,7 +62,7 @@ class ESP32PulseMeterSensor : public Component, public sensor::Sensor {
   }
 
  public:
-  ESP32PulseMeterSensor() {
+  PulseMeterSensor() {
     // Allocate PCNT unit
     for (uint8_t i = 0; i < PCNT_UNIT_MAX; i++) {
       if (pcnt_unit_mutex[i] == nullptr) {
@@ -147,7 +147,7 @@ class ESP32PulseMeterSensor : public Component, public sensor::Sensor {
     return setup_priority::HARDWARE; 
   }
 
-  ~ESP32PulseMeterSensor() {
+  ~PulseMeterSensor() {
     if (timer_) {
       timerEnd(timer_);
     }
@@ -155,10 +155,10 @@ class ESP32PulseMeterSensor : public Component, public sensor::Sensor {
   }
 
  private:
-  static ESP32PulseMeterSensor *pcnt_unit_mutex[PCNT_UNIT_MAX];
+  static PulseMeterSensor *pcnt_unit_mutex[PCNT_UNIT_MAX];
 };
 
-ESP32PulseMeterSensor *ESP32PulseMeterSensor::pcnt_unit_mutex[PCNT_UNIT_MAX] = {};
+PulseMeterSensor *PulseMeterSensor::pcnt_unit_mutex[PCNT_UNIT_MAX] = {};
 
 } // namespace pulse_meter
 } // namespace esphome
