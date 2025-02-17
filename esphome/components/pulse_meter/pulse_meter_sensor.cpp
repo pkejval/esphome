@@ -57,7 +57,7 @@ bool PulseMeterSensor::setup_pcnt() {
   if (pcnt_unit_config(&config) != ESP_OK) return false;
   
   // Configure hardware filter
-  uint16_t filter_val = std::min(filter_us_ * APB_CLK_FREQ / 1000000, 1023U);
+  uint16_t filter_val = std::min<unsigned long>(filter_us_ * APB_CLK_FREQ / 1000000, 1023U);
   if (pcnt_set_filter_value(static_cast<pcnt_unit_t>(state_.pcnt_unit), filter_val) != ESP_OK) return false;
   if (pcnt_filter_enable(static_cast<pcnt_unit_t>(state_.pcnt_unit)) != ESP_OK) return false;
   

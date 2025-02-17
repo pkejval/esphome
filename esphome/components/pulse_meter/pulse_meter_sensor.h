@@ -7,6 +7,7 @@
 #include "driver/pcnt.h"
 #include "soc/pcnt_struct.h"
 #include "esp_timer.h"
+#include "freertos/timers.h"
 
 namespace esphome {
 namespace pulse_meter {
