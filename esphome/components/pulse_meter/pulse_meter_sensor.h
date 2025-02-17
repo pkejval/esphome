@@ -3,80 +3,41 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
-#include "soc/pcnt_struct.h"
-#include "driver/gptimer.h"
+#include "driver/timer.h"
+#include "driver/gpio.h"
+#include <atomic>
 
 namespace esphome {
 namespace pulse_meter {
 
-// Forward declaration for mutex
-class PulseMeterSensor;
-
-struct __attribute__((packed)) ESP32State {
-  uint32_t last_edge_time;
-  int16_t pulse_count;
-  uint8_t pcnt_unit;
-  uint8_t initialized : 1;
-  uint8_t reserved : 7;  // For future use
-};
-
 class PulseMeterSensor : public sensor::Sensor, public Component {
- public:
-  PulseMeterSensor();
-  ~PulseMeterSensor();
+public:
+  void set_pin(InternalGPIOPin *pin);
+  void configure(uint32_t filter_us, uint32_t timeout_us, bool use_pulse_mode);
 
-  void set_pin(InternalGPIOPin *pin) { pin_ = pin; }
-  void set_filter_us(uint32_t filter) { filter_us_ = filter; }
-  void set_timeout_us(uint32_t timeout) { timeout_us_ = timeout; }
-  void set_total_sensor(sensor::Sensor *sensor) { total_sensor_ = sensor; }
-  void set_total_pulses(uint32_t pulses);
-
-  // Override Component methods
   void setup() override;
-  void loop() override;
-  float get_setup_priority() const override { return setup_priority::HARDWARE; }
   void dump_config() override;
 
- protected:
-  // Hardware-specific methods
-  bool setup_pcnt();
-  void cleanup_pcnt();
-  static void IRAM_ATTR pcnt_intr_handler(void *arg);
+private:
+  static void IRAM_ATTR hw_timer_isr(void *arg);
+  static void IRAM_ATTR gpio_isr(void *arg);
+  void process_edges();
+
+  gpio_num_t gpio_num_;
+  timer_group_t timer_group_ = TIMER_GROUP_0;
+  timer_idx_t timer_idx_ = TIMER_0;
+  intr_handle_t timer_isr_handle_;
   
-  // ESP32 hardware resources
-  InternalGPIOPin *pin_{nullptr};
-  gptimer_handle_t timer_{nullptr};
-  portMUX_TYPE timer_mux_ = portMUX_INITIALIZER_UNLOCKED;
-  
-  // Configuration
-  uint32_t filter_us_{0};
-  uint32_t timeout_us_{1000000UL * 60UL * 5UL};  // 5 minutes default
-  sensor::Sensor *total_sensor_{nullptr};
-  
-  // State tracking
-  ESP32State state_{};
-  volatile uint32_t total_pulses_{0};
-  
-  // Static resource management
-  static PulseMeterSensor *pcnt_unit_mutex_[PCNT_UNIT_MAX];
-  
-  // Internal methods
-  void IRAM_ATTR handle_interrupt();
-  void update_total_pulses(int16_t count);
-  void calculate_frequency();
-  
-  // Configuration methods
-  bool configure_pcnt();
-  bool configure_timer();
-  
-  // Helper methods
-  static uint32_t get_time_us() { return esp_timer_get_time(); }
-  static uint32_t time_diff(uint32_t newer, uint32_t older) {
-    return (newer >= older) ? (newer - older) : (0xFFFFFFFF - older + newer + 1);
-  }
-  
-  // Friend declaration for test access
-  friend class TestPulseMeterSensor;
+  struct alignas(64) {
+    std::atomic<uint32_t> edge_count{0};
+    std::atomic<uint32_t> last_edge_us{0};
+    std::atomic<uint32_t> pulse_width_us{0};
+  } atomic_state_;
+
+  uint32_t filter_us_;
+  uint32_t timeout_us_;
+  bool pulse_mode_;
+  TaskHandle_t processing_task_;
 };
 
 } // namespace pulse_meter
