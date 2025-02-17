@@ -5,8 +5,6 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 
-#include <cinttypes>
-
 namespace esphome {
 namespace pulse_meter {
 
@@ -22,9 +20,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   void set_timeout_us(uint32_t timeout) { this->timeout_us_ = timeout; }
   void set_total_sensor(sensor::Sensor *sensor) { this->total_sensor_ = sensor; }
   void set_filter_mode(InternalFilterMode mode) { this->filter_mode_ = mode; }
-
   void set_total_pulses(uint32_t pulses);
-
   void setup() override;
   void loop() override;
   float get_setup_priority() const override;
@@ -50,13 +46,12 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   // This struct (and the two pointers) are used to pass data between the ISR and loop.
   // These two pointers are exchanged each loop.
   // Therefore you can't use data in the pointer to loop receives to set values in the pointer to loop sends.
-  // As a result it's easiest if you only use these pointers to send data from the ISR to the loop.
-  // (except for resetting the values)
   struct State {
     uint32_t last_detected_edge_us_ = 0;
     uint32_t last_rising_edge_us_ = 0;
     uint32_t count_ = 0;
   };
+
   State state_[2];
   volatile State *set_ = state_;
   volatile State *get_ = state_ + 1;
@@ -68,6 +63,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   struct EdgeState {
     uint32_t last_sent_edge_us_ = 0;
   };
+
   EdgeState edge_state_{};
 
   /// Filter state for pulse mode
@@ -76,6 +72,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
     bool latched_ = false;
     bool last_pin_val_ = false;
   };
+
   PulseState pulse_state_{};
 };
 
