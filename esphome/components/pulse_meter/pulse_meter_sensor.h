@@ -6,7 +6,9 @@
 #include "driver/pcnt.h"
 #include "soc/pcnt_struct.h"
 #include "esp_timer.h"
-#include "esp32-hal-timer.h"
+#include "driver/timer.h"
+#include "driver/gpio.h"
+#include "driver/periph_ctrl.h"
 
 namespace esphome {
 namespace pulse_meter {
