@@ -21,7 +21,7 @@ void Nextion::setup() {
   this->send_command_("sleep=0");
 
   // Reboot it
-  if (this->!skip_setup_reboot_) {
+  if (!this->skip_setup_reboot_) {
     this->send_command_("rest");
   }
 
