@@ -883,7 +883,7 @@ class Nextion : public NextionBase, public PollingComponent, public uart::UARTDe
    *
    * When set to true, the display will not be rebooted in setup.
    */
-  void set_skip_setup_reboot(bool skip_reboot) { this->skip_setup_reboot_ = skip_handshake; }
+  void set_skip_setup_reboot(bool skip_reboot) { this->skip_setup_reboot_ = skip_reboot; }
 
   /**
    * Sets Nextion mode between sleep and awake
