@@ -40,7 +40,7 @@ void PulseMeterSensor::loop() {
   // If an edge was peeked, repay the debt
   if (this->peeked_edge_ && this->get_->count_ > 0) {
     this->peeked_edge_ = false;
-    this->get_->count_--;
+    this->get_->count_ = this->get_->count_ - 1;
   }
 
   // If there is an unprocessed edge, and filter_us_ has passed since, count this edge early
@@ -48,7 +48,7 @@ void PulseMeterSensor::loop() {
       now - this->get_->last_rising_edge_us_ >= this->filter_us_) {
     this->peeked_edge_ = true;
     this->get_->last_detected_edge_us_ = this->get_->last_rising_edge_us_;
-    this->get_->count_++;
+    this->get_->count_ = this->get_->count_ + 1;
   }
 
   // Check if we detected a pulse this loop
@@ -118,7 +118,7 @@ void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
     state.last_sent_edge_us_ = now;
     set.last_detected_edge_us_ = now;
     set.last_rising_edge_us_ = now;
-    set.count_++;
+    set.count_ = set.count_ + 1;
   }
 }
 
@@ -135,7 +135,7 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   } else if (length && !state.latched_ && state.last_pin_val_) {  // Long enough high edge
     state.latched_ = true;
     set.last_detected_edge_us_ = state.last_intr_;
-    set.count_++;
+    set.count_ = set.count_ + 1;
   }
   // Determine the rising edge timing depending on current pin value
   set.last_rising_edge_us_ = (!state.latched_ && pin_val) ? now : set.last_detected_edge_us_;
