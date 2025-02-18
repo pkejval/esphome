@@ -30,52 +30,45 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   void dump_config() override;
 
  protected:
-  // Optimized ISR functions: minimal, placed in IRAM and marked hot
+  portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+
   static void IRAM_ATTR edge_intr(PulseMeterSensor *sensor) __attribute__((hot));
   static void IRAM_ATTR pulse_intr(PulseMeterSensor *sensor) __attribute__((hot));
 
-  // I/O and timing configuration
   InternalGPIOPin *pin_{nullptr};
   uint32_t filter_us_ = 0;
   uint32_t timeout_us_ = 1000000UL * 60UL * 5UL;
   sensor::Sensor *total_sensor_{nullptr};
   InternalFilterMode filter_mode_{FILTER_EDGE};
 
-  // Runtime state information
   enum class MeterState { INITIAL, RUNNING, TIMED_OUT };
   MeterState meter_state_ = MeterState::INITIAL;
   bool peeked_edge_ = false;
   uint32_t total_pulses_ = 0;
   uint32_t last_processed_edge_us_ = 0;
 
-  // Structure used to pass data from ISR to the main loop.
   struct State {
     uint32_t last_detected_edge_us_ = 0;
     uint32_t last_rising_edge_us_ = 0;
     uint32_t count_ = 0;
   };
 
-  // Allocate two state buffers statically to avoid dynamic allocations.
   State state_[2];
   volatile State *set_ = state_;
   volatile State *get_ = state_ + 1;
 
-  // Used exclusively in the ISR.
   ISRInternalGPIOPin isr_pin_;
 
-  // Filter state for edge mode.
-  struct EdgeState {
-    uint32_t last_sent_edge_us_ = 0;
+  union {
+    struct {
+      uint32_t last_sent_edge_us_;
+    } edge;
+    struct {
+      uint32_t last_intr_;
+      bool latched_;
+      bool last_pin_val_;
+    } pulse;
   };
-  EdgeState edge_state_{};
-
-  // Filter state for pulse mode.
-  struct PulseState {
-    uint32_t last_intr_ = 0;
-    bool latched_ = false;
-    bool last_pin_val_ = false;
-  };
-  PulseState pulse_state_{};
 };
 
 }  // namespace pulse_meter
