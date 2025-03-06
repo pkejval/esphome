@@ -59,10 +59,10 @@ bool Nextion::check_connect_() {
     this->reset_(false);
 
     this->ignore_is_setup_ = true;
-    this->send_command_("boguscommand=0");  // bogus command. needed sometimes after updating
-    if (this->exit_reparse_on_start_) {
-      this->send_command_("DRAKJHSUYDGBNCJHGJKSHBDN");
-    }
+    //this->send_command_("boguscommand=0");  // bogus command. needed sometimes after updating
+    //if (this->exit_reparse_on_start_) {
+    //  this->send_command_("DRAKJHSUYDGBNCJHGJKSHBDN");
+    //}
     this->send_command_("connect");
 
     this->comok_sent_ = millis();
