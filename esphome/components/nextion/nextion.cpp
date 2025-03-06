@@ -13,15 +13,15 @@ void Nextion::setup() {
   this->is_setup_ = false;
   this->ignore_is_setup_ = true;
 
-  // Wake up the nextion
-  this->send_command_("bkcmd=0");
-  this->send_command_("sleep=0");
-
-  this->send_command_("bkcmd=0");
-  this->send_command_("sleep=0");
-
-  // Reboot it
   if (!this->skip_setup_reboot_) {
+    // Wake up the nextion
+    this->send_command_("bkcmd=0");
+    this->send_command_("sleep=0");
+
+    this->send_command_("bkcmd=0");
+    this->send_command_("sleep=0");
+
+    // Reboot it
     this->send_command_("rest");
   }
 
