@@ -349,7 +349,7 @@ void Nextion::process_serial_() {
 
   // Read as many bytes as possible in one go
   while (this->available() && available_bytes < max_read) {
-    size_t chunk_size = std::min(this->available(), max_read - available_bytes);
+    size_t chunk_size = std::min(static_cast<size_t>(this->available()), max_read - available_bytes);
     size_t read_bytes = this->read_array(&buffer[available_bytes], chunk_size);
     if (read_bytes == 0)
       break;
