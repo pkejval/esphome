@@ -59,10 +59,10 @@ bool Nextion::check_connect_() {
     this->reset_(false);
 
     this->ignore_is_setup_ = true;
-    //this->send_command_("boguscommand=0");  // bogus command. needed sometimes after updating
-    //if (this->exit_reparse_on_start_) {
-    //  this->send_command_("DRAKJHSUYDGBNCJHGJKSHBDN");
-    //}
+    this->send_command_("boguscommand=0");  // bogus command. needed sometimes after updating
+    if (this->exit_reparse_on_start_) {
+      this->send_command_("DRAKJHSUYDGBNCJHGJKSHBDN");
+    }
     this->send_command_("connect");
 
     this->comok_sent_ = millis();
@@ -71,7 +71,7 @@ bool Nextion::check_connect_() {
     return false;
   }
 
-  if (millis() - this->comok_sent_ <= 5)  // Wait 500 ms
+  if (millis() - this->comok_sent_ <= 50)  // Wait 50 ms
     return false;
 
   std::string response;
@@ -122,7 +122,7 @@ bool Nextion::check_connect_() {
   }
 
   this->ignore_is_setup_ = false;
-  //this->dump_config();
+  this->dump_config();
   return true;
 }
 
@@ -273,20 +273,20 @@ void Nextion::loop() {
   if (this->nextion_reports_is_setup_ && !this->sent_setup_commands_) {
     this->ignore_is_setup_ = true;
     this->sent_setup_commands_ = true;
-    //this->send_command_("bkcmd=3");  // Always, returns 0x00 to 0x23 result of serial command.
+    this->send_command_("bkcmd=3");  // Always, returns 0x00 to 0x23 result of serial command.
 
-    //if (this->brightness_.has_value()) {
-    //  this->set_backlight_brightness(this->brightness_.value());
-    //}
+    if (this->brightness_.has_value()) {
+      this->set_backlight_brightness(this->brightness_.value());
+    }
 
     // Check if a startup page has been set and send the command
     if (this->start_up_page_ != -1) {
       this->goto_page(this->start_up_page_);
     }
 
-    //if (this->wake_up_page_ != -1) {
-    //  this->set_wake_up_page(this->wake_up_page_);
-    //}
+    if (this->wake_up_page_ != -1) {
+      this->set_wake_up_page(this->wake_up_page_);
+    }
 
     this->ignore_is_setup_ = false;
   }
