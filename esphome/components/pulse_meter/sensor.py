@@ -11,6 +11,7 @@ from esphome.const import (
     CONF_TIMEOUT,
     CONF_TOTAL,
     CONF_VALUE,
+    CONF_CORE_PINNING,
     ICON_PULSE,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
@@ -22,8 +23,6 @@ from esphome.core import CORE
 CODEOWNERS = ["@stevebaxter", "@cstaahl", "@TrentHouliston"]
 
 pulse_meter_ns = cg.esphome_ns.namespace("pulse_meter")
-
-
 PulseMeterSensor = pulse_meter_ns.class_(
     "PulseMeterSensor", sensor.Sensor, cg.Component
 )
@@ -34,19 +33,20 @@ FILTER_MODES = {
     "PULSE": PulseMeterInternalFilterMode.FILTER_PULSE,
 }
 
-SetTotalPulsesAction = pulse_meter_ns.class_("SetTotalPulsesAction", automation.Action)
+# Add PCNT support for ESP32
+if CORE.is_esp32:
+    FILTER_MODES["PCNT"] = PulseMeterInternalFilterMode.FILTER_PCNT
 
+SetTotalPulsesAction = pulse_meter_ns.class_("SetTotalPulsesAction", automation.Action)
 
 def validate_internal_filter(value):
     return cv.positive_time_period_microseconds(value)
-
 
 def validate_timeout(value):
     value = cv.positive_time_period_microseconds(value)
     if value.total_minutes > 70:
         raise cv.Invalid("Maximum timeout is 70 minutes")
     return value
-
 
 def validate_pulse_meter_pin(value):
     value = pins.internal_gpio_input_pin_schema(value)
@@ -55,7 +55,6 @@ def validate_pulse_meter_pin(value):
             "Pins GPIO16 and GPIO17 cannot be used as pulse counters on ESP8266."
         )
     return value
-
 
 CONFIG_SCHEMA = sensor.sensor_schema(
     PulseMeterSensor,
@@ -77,24 +76,25 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_INTERNAL_FILTER_MODE, default="EDGE"): cv.enum(
             FILTER_MODES, upper=True
         ),
+        cv.Optional(CONF_CORE_PINNING, default=True): cv.boolean,
     }
 )
-
 
 async def to_code(config):
     var = await sensor.new_sensor(config)
     await cg.register_component(var, config)
-
     pin = await cg.gpio_pin_expression(config[CONF_PIN])
     cg.add(var.set_pin(pin))
     cg.add(var.set_filter_us(config[CONF_INTERNAL_FILTER]))
     cg.add(var.set_timeout_us(config[CONF_TIMEOUT]))
     cg.add(var.set_filter_mode(config[CONF_INTERNAL_FILTER_MODE]))
-
+    
+    if CONF_CORE_PINNING in config:
+        cg.add(var.set_core_pinning(config[CONF_CORE_PINNING]))
+        
     if CONF_TOTAL in config:
         sens = await sensor.new_sensor(config[CONF_TOTAL])
         cg.add(var.set_total_sensor(sens))
-
 
 @automation.register_action(
     "pulse_meter.set_total_pulses",
