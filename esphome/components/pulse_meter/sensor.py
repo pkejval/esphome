@@ -11,7 +11,6 @@ from esphome.const import (
     CONF_TIMEOUT,
     CONF_TOTAL,
     CONF_VALUE,
-    CONF_CORE_PINNING,
     ICON_PULSE,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
@@ -19,6 +18,8 @@ from esphome.const import (
     UNIT_PULSES_PER_MINUTE,
 )
 from esphome.core import CORE
+
+CONF_CORE_PINNING = "core_pinning"
 
 CODEOWNERS = ["@stevebaxter", "@cstaahl", "@TrentHouliston"]
 
