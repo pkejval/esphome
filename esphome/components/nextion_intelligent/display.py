@@ -5,7 +5,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import uart
 from esphome.const import (
-    CONF_ID, CONF_LAMBDA, CONF_ON_SETUP, CONF_TRIGGER_ID,
+    CONF_ID, CONF_LAMBDA, CONF_TRIGGER_ID,
     CONF_VALUE, CONF_FORMAT, CONF_COLOR,
     CONF_ARGS,
 )
@@ -31,6 +31,7 @@ CONF_NEXTION_INTELLIGENT_ID = "nextion_intelligent_id"
 CONF_COMPONENT_NAME = "component_name"
 CONF_PICTURE_ID = "picture_id"
 CONF_PAGE = "set_page"
+CONF_ON_SETUP = "on_setup"
 
 # Action classes
 SetComponentValueAction = nextion_intelligent_ns.class_(
