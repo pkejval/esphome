@@ -32,6 +32,7 @@ CONF_COMPONENT_NAME = "component_name"
 CONF_PICTURE_ID = "picture_id"
 CONF_PAGE = "set_page"
 CONF_ON_SETUP = "on_setup"
+CONF_ON_BOOT = "on_boot"
 
 # Action classes
 SetComponentValueAction = nextion_intelligent_ns.class_(
