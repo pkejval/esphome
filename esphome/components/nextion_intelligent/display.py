@@ -31,7 +31,7 @@ CONF_NEXTION_INTELLIGENT_ID = "nextion_intelligent_id"
 CONF_COMPONENT_NAME = "component_name"
 CONF_PICTURE_ID = "picture_id"
 CONF_PAGE = "set_page"
-CONF_ON_BOOT = "on_boot"
+CONF_ON_SETUP = "on_setup"
 
 # Action classes
 SetComponentValueAction = nextion_intelligent_ns.class_(
@@ -68,10 +68,11 @@ NextionBootTrigger = nextion_intelligent_ns.class_(
 PLATFORM_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionIntelligent),
     cv.Optional(CONF_LAMBDA): cv.lambda_,
+    cv.Optional(CONF_ON_SETUP): automation.validate_automation(),
     cv.Optional(CONF_ON_BOOT): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionBootTrigger),
     }),
-})
+}).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA)
 
 # Register the display platform
 async def setup_nextion_intelligent_display(config):
@@ -86,8 +87,8 @@ async def setup_nextion_intelligent_display(config):
         cg.add(var.set_lambda(lambda_))
     
     # Set up on_boot callbacks
-    if CONF_ON_BOOT in config:
-        for conf in config[CONF_ON_BOOT]:
+    if CONF_ON_SETUP in config:
+        for conf in config[CONF_ON_SETUP]:
             trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trigger, [], conf)
     
