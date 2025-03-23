@@ -5,7 +5,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import uart
 from esphome.const import (
-    CONF_ID, CONF_LAMBDA, CONF_ON_BOOT, CONF_TRIGGER_ID,
+    CONF_ID, CONF_LAMBDA, CONF_ON_SETUP, CONF_TRIGGER_ID,
     CONF_VALUE, CONF_FORMAT, CONF_COLOR,
     CONF_ARGS,
 )
@@ -67,7 +67,7 @@ NextionBootTrigger = nextion_intelligent_ns.class_(
 PLATFORM_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionIntelligent),
     cv.Optional(CONF_LAMBDA): cv.lambda_,
-    cv.Optional(CONF_ON_BOOT): automation.validate_automation({
+    cv.Optional(CONF_ON_SETUP): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionBootTrigger),
     }),
 })
@@ -85,8 +85,8 @@ async def setup_nextion_intelligent_display(config):
         cg.add(var.set_lambda(lambda_))
     
     # Set up on_boot callbacks
-    if CONF_ON_BOOT in config:
-        for conf in config[CONF_ON_BOOT]:
+    if CONF_ON_SETUP in config:
+        for conf in config[CONF_ON_SETUP]:
             trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trigger, [], conf)
     
