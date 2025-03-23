@@ -10,8 +10,6 @@ from esphome.const import (
     CONF_ARGS,
 )
 
-from . import NextionIntelligent, nextion_intelligent_ns
-
 DEPENDENCIES = ["uart"]
 AUTO_LOAD = ["uart"]
 CODEOWNERS = ["@pkejval"]
