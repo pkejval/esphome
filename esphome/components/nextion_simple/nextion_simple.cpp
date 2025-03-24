@@ -26,25 +26,31 @@ void NextionSimple::loop() {
   if (this->upload_in_progress_)
     return;
 
-  static uint8_t buffer[64] = {0};  // Increased buffer size
+  static uint8_t buffer[64] = {0};
   static uint8_t buffer_index = 0;
-  static const uint8_t command_terminator[] = {0xFF, 0xFF, 0xFF};
-
+  
+  // Process all available bytes at once
   while (this->uart_parent_->available()) {
     uint8_t byte;
     if (this->uart_parent_->read_byte(&byte)) {
       buffer[buffer_index++] = byte;
-
-      // Check for command terminator
-      if (buffer_index >= 3 && memcmp(&buffer[buffer_index - 3], command_terminator, 3) == 0) {
-        // Process the complete command
+      
+      // Check for command terminator (0xFF 0xFF 0xFF)
+      // Only check when we have at least 3 bytes and the current byte is 0xFF
+      if (buffer_index >= 3 && byte == 0xFF && 
+          buffer[buffer_index-2] == 0xFF && 
+          buffer[buffer_index-3] == 0xFF) {
+        
+        // Process the complete command (excluding the terminator)
         this->process_command(buffer, buffer_index - 3);
         buffer_index = 0;  // Reset buffer for next command
       }
-
-      // Prevent buffer overflow
-      if (buffer_index >= sizeof(buffer)) {
-        buffer_index = 0;  // Reset if buffer is full without finding terminator
+      
+      // Prevent buffer overflow - leave room for terminator
+      if (buffer_index >= sizeof(buffer) - 3) {
+        // Keep last 10 bytes in case we're in the middle of a command
+        memmove(buffer, buffer + buffer_index - 10, 10);
+        buffer_index = 10;
       }
     }
   }
