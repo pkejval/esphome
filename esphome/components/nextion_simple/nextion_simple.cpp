@@ -157,7 +157,7 @@ void NextionSimple::set_component_picc1(const std::string &component_name, int v
 }
 
 // Convert ESPHome Color to Nextion color (RGB565)
-int NextionSimple::color_to_integer_(Color color) {
+inline int NextionSimple::color_to_integer_(Color color) {
   return ((color.r & 0xF8) << 8) | ((color.g & 0xFC) << 3) | (color.b >> 3);
 }
 
