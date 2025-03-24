@@ -9,6 +9,7 @@ DEPENDENCIES = ["uart"]
 nextion_simple_ns = cg.esphome_ns.namespace("nextion_simple")
 NextionSimple = nextion_simple_ns.class_("NextionSimple", cg.Component)
 NextionSetupTrigger = nextion_simple_ns.class_("NextionSetupTrigger", automation.Trigger.template())
+NextionPageTrigger = nextion_simple_ns.class_("NextionPageTrigger", automation.Trigger.template())
 
 # Actions
 SetComponentValueAction = nextion_simple_ns.class_("SetComponentValueAction", automation.Action)
@@ -33,6 +34,7 @@ CONF_TEXT = "text"
 CONF_ARGS = "args"
 CONF_TFT_URL = "tft_url"
 CONF_ON_SETUP = "on_setup"
+CONF_ON_PAGE = "on_page"
 
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionSimple),
@@ -40,6 +42,9 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_TFT_URL): cv.string,
     cv.Optional(CONF_ON_SETUP): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionSetupTrigger),
+    }),
+    cv.Optional(CONF_ON_PAGE): automation.validate_automation({
+        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionPageTrigger),
     }),
 }).extend(cv.COMPONENT_SCHEMA)
 
@@ -159,14 +164,18 @@ async def nextion_simple_upload_tft_to_code(config, action_id, template_arg, arg
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-    
     uart_component = await cg.get_variable(config[CONF_UART_ID])
     cg.add(var.set_uart_parent(uart_component))
-    
+
     if CONF_TFT_URL in config:
         cg.add(var.set_tft_url(config[CONF_TFT_URL]))
-    
+
     if CONF_ON_SETUP in config:
         for conf in config.get(CONF_ON_SETUP, []):
             trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trigger, [], conf)
+
+    if CONF_ON_PAGE in config:
+        for conf in config.get(CONF_ON_PAGE, []):
+            trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+            await automation.build_automation(trigger, [(cg.int_, "x")], conf)

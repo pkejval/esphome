@@ -46,13 +46,21 @@ class NextionSimple : public Component {
   void upload_tft();
   bool is_uploading() const { return this->upload_in_progress_; }
   
+  int get_current_page() const { return this->current_page_; }
+
   // Callback
   void add_on_setup_callback(std::function<void()> &&callback) {
     this->on_setup_callback_.add(std::move(callback));
   }
   
+  void add_on_page_callback(std::function<void(int)> &&callback) {
+    this->on_page_callback_.add(std::move(callback));
+  }
+
  protected:
-  
+  void process_command(const uint8_t* command, size_t length);
+  int current_page_ = 0; 
+
   // Helper for color conversion
   int color_to_integer_(Color color);
   
@@ -72,6 +80,7 @@ class NextionSimple : public Component {
   
   // Callback
   CallbackManager<void()> on_setup_callback_;
+  CallbackManager<void(int)> on_page_callback_;
 };
 
 // Action to set component value (int)
@@ -311,6 +320,13 @@ class NextionSetupTrigger : public Trigger<> {
      parent->add_on_setup_callback([this]() { this->trigger(); });
    }
  };
+
+ class NextionPageTrigger : public Trigger<int> {
+  public:
+    explicit NextionPageTrigger(NextionSimple *parent) {
+      parent->add_on_page_callback([this](int page) { this->trigger(page); });
+    }
+  };
 
 }  // namespace nextion_simple
 }  // namespace esphome

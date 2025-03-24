@@ -26,21 +26,47 @@ void NextionSimple::loop() {
   if (this->upload_in_progress_)
     return;
 
-  static uint8_t buffer[4] = {0};
+  static uint8_t buffer[64] = {0};  // Increased buffer size
   static uint8_t buffer_index = 0;
-  static const uint8_t setup_command[] = {0x88, 0xFF, 0xFF, 0xFF};
+  static const uint8_t command_terminator[] = {0xFF, 0xFF, 0xFF};
 
   while (this->uart_parent_->available()) {
     uint8_t byte;
     if (this->uart_parent_->read_byte(&byte)) {
-      buffer[buffer_index] = byte;
-      buffer_index = (buffer_index + 1) & 0x03;  // Faster than % 4
+      buffer[buffer_index++] = byte;
 
-      if (memcmp(buffer, setup_command, 4) == 0) {
+      // Check for command terminator
+      if (buffer_index >= 3 && memcmp(&buffer[buffer_index - 3], command_terminator, 3) == 0) {
+        // Process the complete command
+        this->process_command(buffer, buffer_index - 3);
+        buffer_index = 0;  // Reset buffer for next command
+      }
+
+      // Prevent buffer overflow
+      if (buffer_index >= sizeof(buffer)) {
+        buffer_index = 0;  // Reset if buffer is full without finding terminator
+      }
+    }
+  }
+}
+
+void NextionSimple::process_command(const uint8_t* command, size_t length) {
+  // Example command processing
+  if (length > 0) {
+    switch (command[0]) {
+      case 0x66:  // Current page ID
+        this->current_page_ = command[1];
+        ESP_LOGD(TAG, "Current page: %d", this->current_page_);
+        this->on_page_callback_.call(this->current_page_);
+        break;
+      case 0x88:  // System startup
         ESP_LOGD(TAG, "Received setup command from Nextion");
         this->on_setup_callback_.call();
-        buffer_index = 0;
-      }
+        break;
+      // Add more command handlers here
+      default:
+        ESP_LOGW(TAG, "Unknown command received: 0x%02X", command[0]);
+        break;
     }
   }
 }
