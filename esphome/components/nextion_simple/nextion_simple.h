@@ -36,6 +36,7 @@ class NextionSimple : public Component {
   void set_component_background_color(const std::string &component_name, Color color);
   void set_component_font_color(const std::string &component_name, int color);
   void set_component_font_color(const std::string &component_name, Color color);
+  void set_nextion_ready_cooldown(uint32_t cooldown) { nextion_ready_cooldown_ = cooldown; }
   void set_page(int page);
   void goto_page(int page);
   // Send command functions
@@ -57,9 +58,15 @@ class NextionSimple : public Component {
     this->on_page_callback_.add(std::move(callback));
   }
 
+  void add_on_nextion_ready_callback(std::function<void()> &&callback) {
+    this->on_nextion_ready_callback_.add(std::move(callback));
+  }
+
  protected:
   void process_command(const uint8_t* command, size_t length);
   int current_page_ = 0; 
+  uint32_t nextion_ready_cooldown_;
+  uint32_t last_nextion_ready_time_{0};
 
   // Helper for color conversion
   int color_to_integer_(Color color);
@@ -81,6 +88,7 @@ class NextionSimple : public Component {
   // Callback
   CallbackManager<void()> on_setup_callback_;
   CallbackManager<void(int)> on_page_callback_;
+  CallbackManager<void()> on_nextion_ready_callback_;
 };
 
 // Action to set component value (int)
@@ -319,14 +327,21 @@ class NextionSetupTrigger : public Trigger<> {
    explicit NextionSetupTrigger(NextionSimple *parent) {
      parent->add_on_setup_callback([this]() { this->trigger(); });
    }
- };
+};
 
- class NextionPageTrigger : public Trigger<int> {
+class NextionPageTrigger : public Trigger<int> {
   public:
     explicit NextionPageTrigger(NextionSimple *parent) {
       parent->add_on_page_callback([this](int page) { this->trigger(page); });
     }
-  };
+};
+
+class NextionReadyTrigger : public Trigger<> {
+  public:
+    explicit NextionReadyTrigger(NextionSimple *parent) {
+      parent->add_on_nextion_ready_callback([this]() { this->trigger(); });
+    }
+};
 
 }  // namespace nextion_simple
 }  // namespace esphome

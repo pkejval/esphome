@@ -20,6 +20,9 @@ void NextionSimple::setup() {
     this->mark_failed();
     return;
   }
+
+  ESP_LOGD(TAG, "Running on_setup callback");
+  this->on_setup_callback_.call();
 }
 
 void NextionSimple::loop() {
@@ -57,7 +60,6 @@ void NextionSimple::loop() {
 }
 
 void NextionSimple::process_command(const uint8_t* command, size_t length) {
-  // Example command processing
   if (length > 0) {
     switch (command[0]) {
       case 0x66:  // Current page ID
@@ -65,13 +67,19 @@ void NextionSimple::process_command(const uint8_t* command, size_t length) {
         ESP_LOGD(TAG, "Current page: %d", this->current_page_);
         this->on_page_callback_.call(this->current_page_);
         break;
-      case 0x88:  // System startup
-        ESP_LOGD(TAG, "Received setup command from Nextion");
-        this->on_setup_callback_.call();
-        break;
-      // Add more command handlers here
+      case 0x88: {  // System startup
+          uint32_t current_time = millis();
+          if (current_time - this->last_nextion_ready_time_ >= this->nextion_ready_cooldown_) {
+            this->last_nextion_ready_time_ = current_time;
+            ESP_LOGD(TAG, "Received ready command from Nextion - running on_nextion_ready callback");
+            this->on_nextion_ready_callback_.call();
+          } else {
+            ESP_LOGV(TAG, "Discarding ready command (too frequent)");
+          }
+          break;
+        }
       default:
-        ESP_LOGW(TAG, "Unknown command received: 0x%02X", command[0]);
+        ESP_LOGD(TAG, "Unknown command received: 0x%02X", command[0]);
         break;
     }
   }

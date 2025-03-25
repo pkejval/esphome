@@ -10,6 +10,7 @@ nextion_simple_ns = cg.esphome_ns.namespace("nextion_simple")
 NextionSimple = nextion_simple_ns.class_("NextionSimple", cg.Component)
 NextionSetupTrigger = nextion_simple_ns.class_("NextionSetupTrigger", automation.Trigger.template())
 NextionPageTrigger = nextion_simple_ns.class_("NextionPageTrigger", automation.Trigger.template())
+NextionReadyTrigger = nextion_simple_ns.class_("NextionReadyTrigger", automation.Trigger.template())
 
 # Actions
 SetComponentValueAction = nextion_simple_ns.class_("SetComponentValueAction", automation.Action)
@@ -35,6 +36,8 @@ CONF_ARGS = "args"
 CONF_TFT_URL = "tft_url"
 CONF_ON_SETUP = "on_setup"
 CONF_ON_PAGE = "on_page"
+CONF_ON_NEXTION_READY = "on_nextion_ready"
+CONF_NEXTION_READY_COOLDOWN = "nextion_ready_cooldown"
 
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionSimple),
@@ -46,6 +49,10 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_ON_PAGE): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionPageTrigger),
     }),
+    cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation({
+        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionReadyTrigger),
+    }),
+    cv.Optional(CONF_NEXTION_READY_COOLDOWN, default="1s"): cv.positive_time_period_milliseconds,
 }).extend(cv.COMPONENT_SCHEMA)
 
 # Action schemas
@@ -179,3 +186,11 @@ async def to_code(config):
         for conf in config.get(CONF_ON_PAGE, []):
             trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trigger, [(cg.int_, "x")], conf)
+
+    if CONF_ON_NEXTION_READY in config:
+        for conf in config.get(CONF_ON_NEXTION_READY, []):
+            trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+            await automation.build_automation(trigger, [], conf)
+
+    if CONF_NEXTION_READY_COOLDOWN in config:
+        cg.add(var.set_nextion_ready_cooldown(config[CONF_NEXTION_READY_COOLDOWN]))
