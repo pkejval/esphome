@@ -30,9 +30,8 @@ class NextionSimple : public Component {
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
   
   // Command functions
-  void set_component_value(const std::string &component_name, int value);
   void set_component_value(const std::string &component_name, float value);
-  void set_component_text(const std::string &component_name, const std::string &text);
+  void set_component_text(const std::string &component_name, const std::string &text, const std::vector<std::string> &args = {});
   void set_component_text_printf(const std::string &component_name, const char *format, ...);
   void set_component_picc(const std::string &component_name, int value);
   void set_component_picc1(const std::string &component_name, int value);
@@ -105,98 +104,40 @@ class NextionSimple : public Component {
   CallbackManager<void()> on_nextion_ready_callback_;
 };
 
-// Action to set component value (int)
-template<typename... Ts> class SetComponentValueAction : public Action<Ts...> {
- public:
-  SetComponentValueAction(NextionSimple *parent) : parent_(parent) {}
-  
-  void set_component_name(const std::string &component_name) { this->component_name_ = component_name; }
-  void set_value(int value) { this->value_ = value; }
-  
-  void play(Ts... x) override {
-    this->parent_->set_component_value(this->component_name_, this->value_);
-  }
-  
- protected:
+template<typename... Ts>
+class SetComponentValueAction : public Action<Ts...> {
+public:
+    SetComponentValueAction(NextionSimple *parent) : parent_(parent) {}
+    void set_component_name(const std::string &component_name) { this->component_name_ = component_name; }
+    void set_value(std::function<float(Ts...)> value_func) { this->value_func_ = value_func; }
+    void play(Ts... x) override {
+      float value = this->value_func_(x...);
+      this->parent_->set_component_value(this->component_name_, value);
+    }
+
+protected:
   NextionSimple *parent_;
   std::string component_name_;
-  int value_;
+  std::function<float(Ts...)> value_func_;
 };
 
-// Action to set component value (float)
-template<typename... Ts> class SetComponentFloatValueAction : public Action<Ts...> {
- public:
-  SetComponentFloatValueAction(NextionSimple *parent) : parent_(parent) {}
-  
-  void set_component_name(const std::string &component_name) { this->component_name_ = component_name; }
-  void set_value(float value) { this->value_ = value; }
-  
-  void play(Ts... x) override {
-    this->parent_->set_component_value(this->component_name_, this->value_);
-  }
-  
- protected:
-  NextionSimple *parent_;
-  std::string component_name_;
-  float value_;
-};
-
-// Action to set component text
-template<typename... Ts> class SetComponentTextAction : public Action<Ts...> {
+template<typename... Ts>
+class SetComponentTextAction : public Action<Ts...> {
  public:
   SetComponentTextAction(NextionSimple *parent) : parent_(parent) {}
   
   void set_component_name(const std::string &component_name) { this->component_name_ = component_name; }
-  void set_text(const std::string &text) { this->text_ = text; }
+  void set_value(std::function<std::string(Ts...)> value_func) { this->value_func_ = value_func; }
   
   void play(Ts... x) override {
-    this->parent_->set_component_text(this->component_name_, this->text_);
+    std::string value = this->value_func_(x...);
+    this->parent_->set_component_text(this->component_name_, value);
   }
-  
- protected:
-  NextionSimple *parent_;
-  std::string component_name_;
-  std::string text_;
-};
 
-// Action to set component text with printf formatting
-template<typename... Ts> class SetComponentTextPrintfAction : public Action<Ts...> {
- public:
-  SetComponentTextPrintfAction(NextionSimple *parent) : parent_(parent) {}
-  
-  void set_component_name(const std::string &component_name) { this->component_name_ = component_name; }
-  void set_format(const std::string &format) { this->format_ = format; }
-  void set_args(const std::vector<TemplatableValue<Ts...>> &args) { this->args_ = args; }
-  
-  void play(Ts... x) override {
-    // Format string with args
-    std::string text = this->format_;
-    
-    // Process args for formatting if provided
-    if (!this->args_.empty()) {
-      std::vector<std::string> rendered_args;
-      for (const auto &arg : this->args_) {
-        rendered_args.push_back(arg.value(x...));
-      }
-      
-      // Simple formatting to replace %s with args
-      size_t pos = 0;
-      size_t arg_index = 0;
-      
-      while ((pos = text.find("%s", pos)) != std::string::npos && arg_index < rendered_args.size()) {
-        text.replace(pos, 2, rendered_args[arg_index++]);
-        pos += rendered_args[arg_index - 1].length();
-      }
-    }
-    
-    this->parent_->set_component_text(this->component_name_, text);
-  }
-  
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  std::string format_;
-  std::vector<TemplatableValue<Ts...>> args_;
+  std::function<std::string(Ts...)> value_func_;
 };
 
 // Action to set component picc

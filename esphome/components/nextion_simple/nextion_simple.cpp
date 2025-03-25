@@ -141,11 +141,6 @@ void NextionSimple::send_command_printf(const char *format, ...) {
   this->send_command(buffer);
 }
 
-// Set component value (integer)
-void NextionSimple::set_component_value(const std::string &component_name, int value) {
-  this->send_command_printf("%s.val=%d", component_name.c_str(), value);
-}
-
 // Set component value (float)
 void NextionSimple::set_component_value(const std::string &component_name, float value) {
   const int integer_value = static_cast<int>(value);
@@ -153,19 +148,27 @@ void NextionSimple::set_component_value(const std::string &component_name, float
 }
 
 // Set component text
-void NextionSimple::set_component_text(const std::string &component_name, const std::string &text) {
-  // Escape quotes in text
-  std::string escaped_text = text;
-  size_t pos = 0;
-  while ((pos = escaped_text.find("\"", pos)) != std::string::npos) {
-    escaped_text.replace(pos, 1, "\\\"");
-    pos += 2;
+void NextionSimple::set_component_text(const std::string &component_name, const std::string &text, const std::vector<std::string> &args) {
+  if (args.empty()) {
+    // Simple text setting without formatting
+    this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), text.c_str());
+  } else {
+    // Text with formatting
+    std::string formatted_text = text;
+    size_t pos = 0;
+    size_t arg_index = 0;
+    
+    // Replace all %s placeholders with the corresponding arg
+    while ((pos = formatted_text.find("%s", pos)) != std::string::npos && arg_index < args.size()) {
+      formatted_text.replace(pos, 2, args[arg_index]);
+      pos += args[arg_index].length();
+      arg_index++;
+    }
+    
+    this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), formatted_text.c_str());
   }
-  
-  this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), escaped_text.c_str());
 }
 
-// Set component text with formatting
 void NextionSimple::set_component_text_printf(const std::string &component_name, const char *format, ...) {
   char buffer[256];
   va_list args;

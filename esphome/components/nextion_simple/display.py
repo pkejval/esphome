@@ -59,38 +59,25 @@ CONFIG_SCHEMA = cv.Schema({
 SET_COMPONENT_VALUE_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
     cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.int_,
-})
-
-SET_COMPONENT_FLOAT_VALUE_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.float_,
+    cv.Required(CONF_VALUE): cv.templatable(cv.Any(cv.int_, cv.float_)),
 })
 
 SET_COMPONENT_TEXT_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
     cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_TEXT): cv.string,
-})
-
-SET_COMPONENT_TEXT_PRINTF_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_FORMAT): cv.string,
-    cv.Optional(CONF_ARGS): cv.ensure_list(cv.templatable(cv.string_strict)),
+    cv.Required(CONF_VALUE): cv.templatable(cv.string),
 })
 
 SET_COMPONENT_PICC_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
     cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.int_,
+    cv.Required(CONF_VALUE): cv.templatable(cv.int_),
 })
 
 SET_COMPONENT_PICC1_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
     cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.int_,
+    cv.Required(CONF_VALUE): cv.templatable(cv.int_),
 })
 
 SET_PAGE_SCHEMA = cv.Schema({
@@ -107,34 +94,17 @@ async def nextion_simple_set_component_value_to_code(config, action_id, template
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
     cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    cg.add(var.set_value(config[CONF_VALUE]))
-    return var
-
-@automation.register_action("nextion.set_float_value", SetComponentFloatValueAction, SET_COMPONENT_FLOAT_VALUE_SCHEMA)
-async def nextion_simple_set_component_float_value_to_code(config, action_id, template_arg, args):
-    paren = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, paren)
-    cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    cg.add(var.set_value(config[CONF_VALUE]))
+    template_ = await cg.templatable(config[CONF_VALUE], args, float)
+    cg.add(var.set_value(template_))
     return var
 
 @automation.register_action("nextion.set_text", SetComponentTextAction, SET_COMPONENT_TEXT_SCHEMA)
 async def nextion_simple_set_component_text_to_code(config, action_id, template_arg, args):
-    paren = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, paren)
+    parent = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    cg.add(var.set_text(config[CONF_TEXT]))
-    return var
-
-@automation.register_action("nextion.set_text_printf", SetComponentTextPrintfAction, SET_COMPONENT_TEXT_PRINTF_SCHEMA)
-async def nextion_simple_set_component_text_printf_to_code(config, action_id, template_arg, args):
-    paren = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, paren)
-    cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    cg.add(var.set_format(config[CONF_FORMAT]))
-    if CONF_ARGS in config:
-        args_ = await cg.templatable(config[CONF_ARGS], args, cg.std_string)
-        cg.add(var.set_args(args_))
+    template_ = await cg.templatable(config[CONF_VALUE], args, cg.std_string)
+    cg.add(var.set_value(template_))
     return var
 
 @automation.register_action("nextion.set_picc", SetComponentPiccAction, SET_COMPONENT_PICC_SCHEMA)
