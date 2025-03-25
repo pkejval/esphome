@@ -5,6 +5,10 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/color.h"
 
+#ifdef USE_ESP_IDF
+#include "esp_http_client.h"
+#endif
+
 namespace esphome {
 namespace nextion_simple {
 
@@ -81,8 +85,18 @@ class NextionSimple : public Component {
   
   // TFT URL
   std::string tft_url_;
+  uint32_t content_length_{0};
   
-  // Upload state
+  #ifdef USE_ARDUINO
+  int upload_by_chunks_(HTTPClient &http_client, uint32_t &range_start);
+  inline uint32_t get_free_heap_();
+  #endif
+  
+  #ifdef USE_ESP_IDF
+  int upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &range_start);
+  #endif
+  
+  bool upload_end_(bool successful);
   bool upload_in_progress_{false};
   
   // Callback

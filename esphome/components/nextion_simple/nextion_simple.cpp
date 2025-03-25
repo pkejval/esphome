@@ -254,17 +254,14 @@ void NextionSimple::upload_tft() {
 #endif
 }
 
-// Upload TFT file using Arduino framework
-void NextionSimple::upload_tft_arduino_() {}
-
-// Upload TFT file using ESP-IDF framework
-void NextionSimple::upload_tft_esp_idf_() {}
-
 void NextionSimple::reset_nextion_() {
   ESP_LOGI(TAG, "Resetting Nextion...");
   this->send_command("rest");
+  #ifdef USE_ESP_IDF
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  #else
   delay(1000);
-  this->upload_in_progress_ = false;
+  #endif
   ESP_LOGI(TAG, "Nextion reset completed");
 }
 
