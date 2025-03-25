@@ -26,7 +26,7 @@ SetComponentFontColorRGBAction = nextion_simple_ns.class_("SetComponentFontColor
 SetPageAction = nextion_simple_ns.class_("SetPageAction", automation.Action)
 UploadTftAction = nextion_simple_ns.class_("UploadTftAction", automation.Action)
 
-CONF_COMPONENT_NAME = "component_name"
+CONF_COMPONENT_NAME = "objname"
 CONF_VALUE = "value"
 CONF_COLOR = "color"
 CONF_PAGE = "page"
@@ -102,7 +102,7 @@ UPLOAD_TFT_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
 })
 
-@automation.register_action("nextion_simple.set_component_value", SetComponentValueAction, SET_COMPONENT_VALUE_SCHEMA)
+@automation.register_action("nextion.set_value", SetComponentValueAction, SET_COMPONENT_VALUE_SCHEMA)
 async def nextion_simple_set_component_value_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -110,7 +110,7 @@ async def nextion_simple_set_component_value_to_code(config, action_id, template
     cg.add(var.set_value(config[CONF_VALUE]))
     return var
 
-@automation.register_action("nextion_simple.set_component_float_value", SetComponentFloatValueAction, SET_COMPONENT_FLOAT_VALUE_SCHEMA)
+@automation.register_action("nextion.set_float_value", SetComponentFloatValueAction, SET_COMPONENT_FLOAT_VALUE_SCHEMA)
 async def nextion_simple_set_component_float_value_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -118,7 +118,7 @@ async def nextion_simple_set_component_float_value_to_code(config, action_id, te
     cg.add(var.set_value(config[CONF_VALUE]))
     return var
 
-@automation.register_action("nextion_simple.set_component_text", SetComponentTextAction, SET_COMPONENT_TEXT_SCHEMA)
+@automation.register_action("nextion.set_text", SetComponentTextAction, SET_COMPONENT_TEXT_SCHEMA)
 async def nextion_simple_set_component_text_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -126,7 +126,7 @@ async def nextion_simple_set_component_text_to_code(config, action_id, template_
     cg.add(var.set_text(config[CONF_TEXT]))
     return var
 
-@automation.register_action("nextion_simple.set_component_text_printf", SetComponentTextPrintfAction, SET_COMPONENT_TEXT_PRINTF_SCHEMA)
+@automation.register_action("nextion.set_text_printf", SetComponentTextPrintfAction, SET_COMPONENT_TEXT_PRINTF_SCHEMA)
 async def nextion_simple_set_component_text_printf_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -137,7 +137,7 @@ async def nextion_simple_set_component_text_printf_to_code(config, action_id, te
         cg.add(var.set_args(args_))
     return var
 
-@automation.register_action("nextion_simple.set_component_picc", SetComponentPiccAction, SET_COMPONENT_PICC_SCHEMA)
+@automation.register_action("nextion.set_picc", SetComponentPiccAction, SET_COMPONENT_PICC_SCHEMA)
 async def nextion_simple_set_component_picc_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -145,7 +145,7 @@ async def nextion_simple_set_component_picc_to_code(config, action_id, template_
     cg.add(var.set_value(config[CONF_VALUE]))
     return var
 
-@automation.register_action("nextion_simple.set_component_picc1", SetComponentPicc1Action, SET_COMPONENT_PICC1_SCHEMA)
+@automation.register_action("nextion.set_picc1", SetComponentPicc1Action, SET_COMPONENT_PICC1_SCHEMA)
 async def nextion_simple_set_component_picc1_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -154,7 +154,7 @@ async def nextion_simple_set_component_picc1_to_code(config, action_id, template
     return var
 
 
-@automation.register_action("nextion_simple.set_page", SetPageAction, SET_PAGE_SCHEMA)
+@automation.register_action("nextion.set_page", SetPageAction, SET_PAGE_SCHEMA)
 async def nextion_simple_set_page_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
@@ -162,7 +162,7 @@ async def nextion_simple_set_page_to_code(config, action_id, template_arg, args)
     cg.add(var.set_page(page))
     return var
 
-@automation.register_action("nextion_simple.upload_tft", UploadTftAction, UPLOAD_TFT_SCHEMA)
+@automation.register_action("nextion.upload_tft", UploadTftAction, UPLOAD_TFT_SCHEMA)
 async def nextion_simple_upload_tft_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
