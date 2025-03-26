@@ -29,59 +29,99 @@ void NextionSimple::loop() {
   if (this->upload_in_progress_)
     return;
 
-  static uint8_t buffer[64] = {0};
-  static uint8_t buffer_index = 0;
+  static uint8_t buffer[64];
+  static size_t buffer_index = 0;
   
-  // Process all available bytes at once
-  while (this->uart_parent_->available()) {
-    uint8_t byte;
-    if (this->uart_parent_->read_byte(&byte)) {
-      buffer[buffer_index++] = byte;
-      
-      // Check for command terminator (0xFF 0xFF 0xFF)
-      // Only check when we have at least 3 bytes and the current byte is 0xFF
-      if (buffer_index >= 3 && byte == 0xFF && 
-          buffer[buffer_index-2] == 0xFF && 
-          buffer[buffer_index-3] == 0xFF) {
-        
-        // Process the complete command (excluding the terminator)
-        this->process_command(buffer, buffer_index - 3);
-        buffer_index = 0;  // Reset buffer for next command
+  // Early return if no data available
+  size_t available = this->uart_parent_->available();
+  if (available == 0)
+    return;
+  
+  // Batch read data into buffer
+  size_t space_available = sizeof(buffer) - buffer_index;
+  if (space_available > 0) {
+    size_t bytes_to_read = std::min(available, space_available);
+    size_t bytes_read = this->uart_parent_->read_array(&buffer[buffer_index], bytes_to_read);
+    buffer_index += bytes_read;
+  }
+  
+  // Process all complete commands in buffer
+  size_t pos = 0;
+  while (pos + 2 < buffer_index) {
+    // Look for command terminator (three consecutive 0xFF bytes)
+    if (buffer[pos] == 0xFF && buffer[pos + 1] == 0xFF && buffer[pos + 2] == 0xFF) {
+      // Process command data before the terminator
+      if (pos > 0) {
+        this->process_command(buffer, pos);
       }
       
-      // Prevent buffer overflow - leave room for terminator
-      if (buffer_index >= sizeof(buffer) - 3) {
-        // Keep last 10 bytes in case we're in the middle of a command
-        memmove(buffer, buffer + buffer_index - 10, 10);
-        buffer_index = 10;
+      // Move past this command and its terminator
+      pos += 3;
+      
+      // Shift remaining data to start of buffer
+      if (pos < buffer_index) {
+        memmove(buffer, buffer + pos, buffer_index - pos);
+        buffer_index -= pos;
+      } else {
+        buffer_index = 0;
       }
+      
+      // Reset position for next search
+      pos = 0;
+    } else {
+      // Move to next position
+      pos++;
+    }
+  }
+  
+  // Handle buffer overflow - preserve last bytes in case of partial command
+  if (buffer_index >= sizeof(buffer) - 3) {
+    const size_t keep_bytes = 20; // Keep enough for potential partial command
+    if (buffer_index > keep_bytes) {
+      memmove(buffer, buffer + buffer_index - keep_bytes, keep_bytes);
+      buffer_index = keep_bytes;
     }
   }
 }
 
 void NextionSimple::process_command(const uint8_t* command, size_t length) {
-  if (length > 0) {
-    switch (command[0]) {
-      case 0x66:  // Current page ID
-        this->current_page_ = command[1];
+  // Early return for empty commands
+  if (length == 0) 
+    return;
+    
+  // Extract the command code (first byte)
+  const uint8_t cmd_code = command[0];
+  
+  // Fast path processing for common command types
+  switch (cmd_code) {
+    case 0x66: // Current page ID
+      if (length >= 2) {
+        // Store the page number and trigger callback
+        this->current_page_ = command[1];   
         ESP_LOGD(TAG, "Current page: %d", this->current_page_);
         this->on_page_callback_.call(this->current_page_);
-        break;
-      case 0x88: {  // System startup
-          uint32_t current_time = millis();
-          if (current_time - this->last_nextion_ready_time_ >= this->nextion_ready_cooldown_) {
-            this->last_nextion_ready_time_ = current_time;
-            ESP_LOGD(TAG, "Received ready command from Nextion - running on_nextion_ready callback");
-            this->on_nextion_ready_callback_.call();
-          } else {
-            ESP_LOGV(TAG, "Discarding ready command (too frequent)");
-          }
-          break;
-        }
-      default:
-        ESP_LOGD(TAG, "Unknown command received: 0x%02X", command[0]);
-        break;
+      } else {
+        ESP_LOGW(TAG, "Invalid page command (too short)");
+      }
+      break;
+      
+    case 0x88: { // System startup / ready notification
+      const uint32_t current_time = millis();
+      
+      // Apply rate limiting to ready callbacks
+      if (current_time - this->last_nextion_ready_time_ >= this->nextion_ready_cooldown_) {
+        this->last_nextion_ready_time_ = current_time;
+        ESP_LOGD(TAG, "Nextion ready - running callback");
+        this->on_nextion_ready_callback_.call();
+      } else {
+        ESP_LOGV(TAG, "Nextion ready (throttled)");
+      }
+      break;
     }
+    default:
+      // Log unknown commands
+      ESP_LOGD(TAG, "Unknown Nextion command: 0x%02X", cmd_code);
+      break;
   }
 }
 
