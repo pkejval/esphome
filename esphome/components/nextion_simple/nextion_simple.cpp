@@ -275,29 +275,7 @@ void NextionSimple::goto_page(int page) {
   this->set_page(page);
 }
 
-// Upload TFT file to Nextion
-void NextionSimple::upload_tft() {
-  if (this->tft_url_.empty()) {
-    ESP_LOGE(TAG, "TFT URL is not set");
-    return;
-  }
-  
-  if (this->upload_in_progress_) {
-    ESP_LOGW(TAG, "Upload already in progress");
-    return;
-  }
-  
-  ESP_LOGI(TAG, "Starting TFT upload from URL: %s", this->tft_url_.c_str());
-  this->upload_in_progress_ = true;
-  
-#ifdef USE_ARDUINO
-  this->upload_tft_arduino_();
-#else
-  this->upload_tft_esp_idf_();
-#endif
-}
-
-void NextionSimple::reset_nextion_() {
+void NextionSimple::reset_nextion() {
   ESP_LOGI(TAG, "Resetting Nextion...");
   this->send_command("rest");
   #ifdef USE_ESP_IDF

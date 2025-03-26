@@ -45,7 +45,7 @@ class NextionSimple : public Component {
   // Send command functions
   void send_command(const std::string &command);
   void send_command_printf(const char *format, ...);
-  void reset_nextion() { this->reset_nextion_(); }
+  void reset_nextion();
   // TFT update
   void upload_tft();
   bool is_uploading() const { return this->upload_in_progress_; }
@@ -77,8 +77,11 @@ class NextionSimple : public Component {
   // TFT upload helpers
   void upload_tft_arduino_();
   void upload_tft_esp_idf_();
-  void reset_nextion_();
-  
+  bool prepare_nextion_for_upload_();
+  bool wait_for_nextion_ack_();
+  bool send_data_to_nextion_(const uint8_t* data, size_t data_size);
+  uint32_t get_free_heap_();
+
   // UART parent
   uart::UARTComponent *uart_parent_{nullptr};
   
