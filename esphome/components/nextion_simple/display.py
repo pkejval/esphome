@@ -131,7 +131,7 @@ async def nextion_simple_set_page_to_code(config, action_id, template_arg, args)
     page = await cg.templatable(config[CONF_PAGE], args, int)
     cg.add(var.set_page(page))
     return var
-
+    
 @automation.register_action("nextion.upload_tft", UploadTftAction, UPLOAD_TFT_SCHEMA)
 async def nextion_simple_upload_tft_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])

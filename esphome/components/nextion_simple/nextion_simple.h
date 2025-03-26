@@ -45,7 +45,7 @@ class NextionSimple : public Component {
   // Send command functions
   void send_command(const std::string &command);
   void send_command_printf(const char *format, ...);
-  void reset_nextion();
+  void reset_nextion() { this->reset_nextion_(); }
   // TFT update
   void upload_tft();
   bool is_uploading() const { return this->upload_in_progress_; }
