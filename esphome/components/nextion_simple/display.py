@@ -56,6 +56,7 @@ CONFIG_SCHEMA = cv.Schema({
 }).extend(cv.COMPONENT_SCHEMA)
 
 # Action schemas
+
 SET_COMPONENT_VALUE_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
     cv.Required(CONF_COMPONENT_NAME): cv.string,
@@ -80,10 +81,15 @@ SET_COMPONENT_PICC1_SCHEMA = cv.Schema({
     cv.Required(CONF_VALUE): cv.templatable(cv.int_),
 })
 
-SET_PAGE_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_PAGE): cv.templatable(cv.int_),
-})
+# New validation function to handle both formats
+def validate_set_page_action(config):
+    if isinstance(config, int):
+        config = {CONF_PAGE: config}
+    
+    return cv.Schema({
+        cv.GenerateID(): cv.use_id(NextionSimple),
+        cv.Required(CONF_PAGE): cv.templatable(cv.int_),
+    })(config)
 
 UPLOAD_TFT_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.use_id(NextionSimple),
@@ -123,15 +129,14 @@ async def nextion_simple_set_component_picc1_to_code(config, action_id, template
     cg.add(var.set_value(config[CONF_VALUE]))
     return var
 
-
-@automation.register_action("nextion.set_page", SetPageAction, SET_PAGE_SCHEMA)
+@automation.register_action("nextion.set_page", SetPageAction, validate_set_page_action)
 async def nextion_simple_set_page_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
     page = await cg.templatable(config[CONF_PAGE], args, int)
     cg.add(var.set_page(page))
     return var
-    
+
 @automation.register_action("nextion.upload_tft", UploadTftAction, UPLOAD_TFT_SCHEMA)
 async def nextion_simple_upload_tft_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
