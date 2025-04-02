@@ -182,8 +182,8 @@ int NextionSimple::upload_by_chunks_(HTTPClient &http_client, uint32_t &range_st
   
   // Calculate the chunk end position
   uint32_t range_end = range_start + chunk_size - 1;
-  if (range_end >= range_start + this->content_length_) {
-    range_end = range_start + this->content_length_ - 1;
+  if (range_end >= this->content_length_ - 1) {
+    range_end = this->content_length_ - 1;
   }
   
   // Set range header for HTTP request
@@ -228,7 +228,9 @@ int NextionSimple::upload_by_chunks_(HTTPClient &http_client, uint32_t &range_st
   
   // Update range and content length
   range_start = range_end + 1;
-  this->content_length_ -= read_size;
+  remaining_length -= read_size;
+  position += read_size;
+  //this->on_upload_progress_.call(position, this->content_length_);
   
   // Wait for ACK from Nextion if not the last chunk
   if (this->content_length_ > 0 && !this->wait_for_nextion_ack_()) {
@@ -272,6 +274,14 @@ void NextionSimple::upload_tft_arduino_() {
   // Feed watchdog
   App.feed_wdt();
   
+  
+  this->send_command("DRAKJHS256");
+  #ifdef USE_ESP_IDF
+  vTaskDelay(pdMS_TO_TICKS(100));
+  #else
+  delay(100);
+  #endif
+
   // Prepare Nextion for upload using common method
   if (!this->prepare_nextion_for_upload_()) {
     this->upload_end_(false);
@@ -287,11 +297,29 @@ void NextionSimple::upload_tft_arduino_() {
   
   // Start upload process
   uint32_t position = 0;
-  while (this->content_length_ > 0) {
+  uint32_t remaining_length = this->content_length_;
+  uint32_t position = 0;
+  while (remaining_length > 0) {
     App.feed_wdt();
     
     ESP_LOGV(TAG, "Uploading chunk: %u bytes remaining", this->content_length_);
-    int upload_result = this->upload_by_chunks_(http_client, position);
+    
+    int retries = 0;
+    int upload_result = -1;
+    while (upload_result < 0 && retries < 3) {
+      upload_result = this->upload_by_chunks_(http_client, position);
+      if (upload_result < 0) {
+        ESP_LOGW(TAG, "Retrying chunk upload (%d/3)...", retries + 1);
+      }
+      retries++;
+    }
+
+    if (upload_result < 0) {
+      ESP_LOGE(TAG, "Error uploading TFT to Nextion!");
+      esp_http_client_cleanup(http_client);
+      this->upload_end_(false);
+      return;
+    }
     
     if (upload_result < 0) {
       ESP_LOGE(TAG, "Error uploading TFT to Nextion!");
@@ -331,8 +359,8 @@ int NextionSimple::upload_by_chunks_(esp_http_client_handle_t http_client, uint3
   
   // Calculate the chunk end position
   uint32_t range_end = range_start + chunk_size - 1;
-  if (range_end >= range_start + this->content_length_) {
-    range_end = range_start + this->content_length_ - 1;
+  if (range_end >= this->content_length_ - 1) {
+    range_end = this->content_length_ - 1;
   }
   
   // Set range header for HTTP request
@@ -340,6 +368,12 @@ int NextionSimple::upload_by_chunks_(esp_http_client_handle_t http_client, uint3
   sprintf(range_header, "bytes=%u-%u", range_start, range_end);
   esp_http_client_set_header(http_client, "Range", range_header);
   
+  
+  // Set range header for HTTP request
+  char range_header[64];
+  sprintf(range_header, "bytes=%u-%u", range_start, range_end);
+  esp_http_client_set_header(http_client, "Range", range_header);
+
   // Perform HTTP request
   esp_err_t err = esp_http_client_perform(http_client);
   if (err != ESP_OK) {
@@ -390,7 +424,9 @@ int NextionSimple::upload_by_chunks_(esp_http_client_handle_t http_client, uint3
   
   // Update range and content length
   range_start = range_end + 1;
-  this->content_length_ -= read_size;
+  remaining_length -= read_size;
+  position += read_size;
+  //this->on_upload_progress_.call(position, this->content_length_);
   
   // Wait for ACK from Nextion if not the last chunk
   if (this->content_length_ > 0 && !this->wait_for_nextion_ack_()) {
@@ -459,6 +495,14 @@ void NextionSimple::upload_tft_esp_idf_() {
   // Feed watchdog
   App.feed_wdt();
   
+  
+  this->send_command("DRAKJHS256");
+  #ifdef USE_ESP_IDF
+  vTaskDelay(pdMS_TO_TICKS(100));
+  #else
+  delay(100);
+  #endif
+
   // Prepare Nextion for upload using common method
   if (!this->prepare_nextion_for_upload_()) {
     esp_http_client_cleanup(http_client);
@@ -473,11 +517,29 @@ void NextionSimple::upload_tft_esp_idf_() {
   
   // Start upload process
   uint32_t position = 0;
-  while (this->content_length_ > 0) {
+  uint32_t remaining_length = this->content_length_;
+  uint32_t position = 0;
+  while (remaining_length > 0) {
     App.feed_wdt();
     
     ESP_LOGV(TAG, "Uploading chunk: %u bytes remaining", this->content_length_);
-    int upload_result = this->upload_by_chunks_(http_client, position);
+    
+    int retries = 0;
+    int upload_result = -1;
+    while (upload_result < 0 && retries < 3) {
+      upload_result = this->upload_by_chunks_(http_client, position);
+      if (upload_result < 0) {
+        ESP_LOGW(TAG, "Retrying chunk upload (%d/3)...", retries + 1);
+      }
+      retries++;
+    }
+
+    if (upload_result < 0) {
+      ESP_LOGE(TAG, "Error uploading TFT to Nextion!");
+      esp_http_client_cleanup(http_client);
+      this->upload_end_(false);
+      return;
+    }
     
     if (upload_result < 0) {
       ESP_LOGE(TAG, "Error uploading TFT to Nextion!");
