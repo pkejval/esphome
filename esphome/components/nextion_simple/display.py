@@ -139,8 +139,9 @@ async def nextion_simple_set_page_to_code(config, action_id, template_arg, args)
 
 @automation.register_action("nextion.upload_tft", UploadTftAction, UPLOAD_TFT_SCHEMA)
 async def nextion_simple_upload_tft_to_code(config, action_id, template_arg, args):
-    paren = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, paren)
+    parent = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, parent)
+    cg.add(var.set_parent(parent))  # Add this line to bind parent to the action
     return var
 
 async def to_code(config):

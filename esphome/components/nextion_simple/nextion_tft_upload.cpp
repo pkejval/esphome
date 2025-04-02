@@ -298,7 +298,6 @@ void NextionSimple::upload_tft_arduino_() {
   // Start upload process
   uint32_t position = 0;
   uint32_t remaining_length = this->content_length_;
-  uint32_t position = 0;
   while (remaining_length > 0) {
     App.feed_wdt();
     
@@ -518,7 +517,6 @@ void NextionSimple::upload_tft_esp_idf_() {
   // Start upload process
   uint32_t position = 0;
   uint32_t remaining_length = this->content_length_;
-  uint32_t position = 0;
   while (remaining_length > 0) {
     App.feed_wdt();
     
