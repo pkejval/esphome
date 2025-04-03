@@ -228,9 +228,6 @@ int NextionSimple::upload_by_chunks_(HTTPClient &http_client, uint32_t &range_st
   
   // Update range and content length
   range_start = range_end + 1;
-  remaining_length -= read_size;
-  position += read_size;
-  //this->on_upload_progress_.call(position, this->content_length_);
   
   // Wait for ACK from Nextion if not the last chunk
   if (this->content_length_ > 0 && !this->wait_for_nextion_ack_()) {
@@ -312,13 +309,6 @@ void NextionSimple::upload_tft_arduino_() {
       }
       retries++;
     }
-
-    if (upload_result < 0) {
-      ESP_LOGE(TAG, "Error uploading TFT to Nextion!");
-      esp_http_client_cleanup(http_client);
-      this->upload_end_(false);
-      return;
-    }
     
     if (upload_result < 0) {
       ESP_LOGE(TAG, "Error uploading TFT to Nextion!");
@@ -361,12 +351,6 @@ int NextionSimple::upload_by_chunks_(esp_http_client_handle_t http_client, uint3
   if (range_end >= this->content_length_ - 1) {
     range_end = this->content_length_ - 1;
   }
-  
-  // Set range header for HTTP request
-  char range_header[64];
-  sprintf(range_header, "bytes=%u-%u", range_start, range_end);
-  esp_http_client_set_header(http_client, "Range", range_header);
-  
   
   // Set range header for HTTP request
   char range_header[64];
@@ -423,8 +407,6 @@ int NextionSimple::upload_by_chunks_(esp_http_client_handle_t http_client, uint3
   
   // Update range and content length
   range_start = range_end + 1;
-  remaining_length -= read_size;
-  position += read_size;
   //this->on_upload_progress_.call(position, this->content_length_);
   
   // Wait for ACK from Nextion if not the last chunk
