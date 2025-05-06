@@ -53,8 +53,8 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   };
 
   State state_[2];
-  std::atomic<State *> set_{nullptr};
-  std::atomic<State *> get_{nullptr};
+  State *set_ = state_;
+  State *get_ = state_ + 1;
 
   ISRInternalGPIOPin isr_pin_;
 

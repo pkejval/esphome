@@ -35,13 +35,10 @@ void PulseMeterSensor::setup() {
 void PulseMeterSensor::loop() {
   const int64_t now = esp_timer_get_time();
 
-  auto *set = this->set_.load();
-  auto *get = this->get_.load();
-  get->count_ = 0;
-  uint32_t int_state = portENTER_CRITICAL_NESTED();
-  this->set_.store(get);
-  this->get_.store(set);
-  portEXIT_CRITICAL_NESTED(int_state);
+  this->get_->count_ = 0;
+  auto *temp = this->set_;
+  this->set_ = this->get_;
+  this->get_ = temp;
 
   if (this->peeked_edge_ && this->get_->count_ > 0) {
     this->peeked_edge_ = false;
