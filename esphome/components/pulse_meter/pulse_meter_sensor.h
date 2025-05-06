@@ -44,27 +44,27 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   MeterState meter_state_ = MeterState::INITIAL;
   bool peeked_edge_ = false;
   std::atomic<uint32_t> total_pulses_{0};
-  uint32_t last_processed_edge_us_ = 0;
+  int64_t last_processed_edge_us_ = 0;
 
   struct State {
-    uint32_t last_detected_edge_us_ = 0;
-    uint32_t last_rising_edge_us_ = 0;
+    int64_t last_detected_edge_us_ = 0;
+    int64_t last_rising_edge_us_ = 0;
     uint32_t count_ = 0;
   };
 
   State state_[2];
-  volatile State *set_ = state_;
-  volatile State *get_ = state_ + 1;
+  State *set_ = state_;
+  State *get_ = state_ + 1;
 
   ISRInternalGPIOPin isr_pin_;
 
   struct EdgeState {
-    uint32_t last_sent_edge_us_ = 0;
+    int64_t last_sent_edge_us_ = 0;
   };
   EdgeState edge_state_{};
 
   struct PulseState {
-    uint32_t last_intr_ = 0;
+    int64_t last_intr_ = 0;
     bool latched_ = false;
     bool last_pin_val_ = false;
   };
