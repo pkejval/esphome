@@ -9,10 +9,22 @@ static const char *const TAG = "pulse_meter";
 
 void PulseMeterSensor::set_total_pulses(uint32_t pulses) {
   atomic_update_pulses(pulses);
-  
+
   if (this->total_sensor_ != nullptr) {
     this->total_sensor_->publish_state(this->total_pulses_.load(std::memory_order_acquire));
   }
+}
+
+void PulseMeterSensor::atomic_update_pulses(uint32_t new_pulses) {
+  uint32_t expected = total_pulses_.load(std::memory_order_relaxed);
+  while (!total_pulses_.compare_exchange_weak(expected, new_pulses,
+                                              std::memory_order_release,
+                                              std::memory_order_relaxed)) {
+  }
+}
+
+void PulseMeterSensor::atomic_increment_pulses(uint32_t increment) {
+  total_pulses_.fetch_add(increment, std::memory_order_acq_rel);
 }
 
 void PulseMeterSensor::setup() {
@@ -52,9 +64,7 @@ void PulseMeterSensor::loop() {
 
   if (this->get_->count_ > 0) {
     if (this->total_sensor_ != nullptr) {
-      uint32_t current_total = this->total_pulses_.load(std::memory_order_relaxed);
-      atomic_update_pulses(current_total + this->get_->count_);
-      
+      this->atomic_increment_pulses(this->get_->count_);
       uint32_t total = this->total_pulses_.load(std::memory_order_acquire);
       this->total_sensor_->publish_state(total);
     }
@@ -91,7 +101,7 @@ void PulseMeterSensor::loop() {
   esp_task_wdt_reset();
 }
 
-float PulseMeterSensor::get_setup_priority() const { 
+float PulseMeterSensor::get_setup_priority() const {
   return setup_priority::DATA;
 }
 

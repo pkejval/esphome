@@ -70,13 +70,8 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   };
   PulseState pulse_state_{};
 
-  void atomic_update_pulses(uint32_t new_pulses) {
-    uint32_t expected = total_pulses_.load(std::memory_order_relaxed);
-    while (!total_pulses_.compare_exchange_weak(expected, new_pulses,
-                                              std::memory_order_release,
-                                              std::memory_order_relaxed)) {
-    }
-  }
+  void atomic_update_pulses(uint32_t new_pulses);
+  void atomic_increment_pulses(uint32_t increment);
 };
 
 }  // namespace pulse_meter
