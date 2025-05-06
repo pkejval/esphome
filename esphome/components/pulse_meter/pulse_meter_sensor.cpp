@@ -20,8 +20,8 @@ void PulseMeterSensor::setup() {
   this->isr_pin_ = pin_->to_isr();
   esp_task_wdt_add(nullptr);
   this->last_processed_edge_us_ = esp_timer_get_time();
-  this->set_.store(&this->state_[0]);
-  this->get_.store(&this->state_[1]);
+  this->set_ = &this->state_[0];
+  this->get_ = &this->state_[1];
 
   if (this->filter_mode_ == FILTER_EDGE) {
     this->pin_->attach_interrupt(PulseMeterSensor::edge_intr, this, gpio::INTERRUPT_RISING_EDGE);
@@ -111,7 +111,7 @@ void PulseMeterSensor::dump_config() {
 void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
   const int64_t now = esp_timer_get_time();
   auto &state = sensor->edge_state_;
-  auto *set = sensor->set_.load(std::memory_order_relaxed);
+  auto *set = sensor->set_;
   if ((now - state.last_sent_edge_us_) >= sensor->filter_us_) {
     state.last_sent_edge_us_ = now;
     set.last_detected_edge_us_ = now;
@@ -124,7 +124,7 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   const int64_t now = esp_timer_get_time();
   const bool pin_val = sensor->isr_pin_.digital_read();
   auto &state = sensor->pulse_state_;
-  auto *set = sensor->set_.load(std::memory_order_relaxed);
+  auto *set = sensor->set_;
   bool length = (now - state.last_intr_) >= sensor->filter_us_;
   if (length && state.latched_ && !state.last_pin_val_) {
     state.latched_ = false;
