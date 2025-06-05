@@ -21,7 +21,7 @@ void NextionSimple::setup() {
   this->on_setup_callback_.call();
 }
 
-HOT_ATTR void NextionSimple::loop() {
+void NextionSimple::loop() {
   if (this->upload_in_progress_) {
     return;
   }
@@ -62,7 +62,7 @@ HOT_ATTR void NextionSimple::loop() {
   }
 }
 
-HOT_ATTR void NextionSimple::process_command(const uint8_t* data, size_t length) {
+void NextionSimple::process_command(const uint8_t* data, size_t length) {
   if (length == 0) {
     return;
   }

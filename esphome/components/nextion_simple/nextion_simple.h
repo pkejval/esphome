@@ -5,14 +5,6 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/color.h"
 
-#ifdef USE_ESP32
-  #define HOT_ATTR IRAM_ATTR
-#elif defined(USE_ESP8266)
-  #define HOT_ATTR ICACHE_RAM_ATTR
-#else
-  #define HOT_ATTR
-#endif
-
 namespace esphome {
 namespace nextion_simple {
 
@@ -21,7 +13,7 @@ class NextionSimple : public Component {
   NextionSimple();
 
   void setup() override;
-  HOT_ATTR void loop() override;
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
 
@@ -41,7 +33,7 @@ class NextionSimple : public Component {
   void set_page(int page);
   void goto_page(int page);
 
-  inline HOT_ATTR void send_command(const char *cmd, size_t len) {
+  inline void send_command(const char *cmd, size_t len) {
     if (this->upload_in_progress_) {
       return;
     }
@@ -56,7 +48,7 @@ class NextionSimple : public Component {
     this->uart_parent_->write_array(reinterpret_cast<const uint8_t *>(buffer), len + 3);
   }
 
-  inline HOT_ATTR void send_command_cstr(const char *format, ...) {
+  inline void send_command_cstr(const char *format, ...) {
     if (this->upload_in_progress_) {
       return;
     }
@@ -92,11 +84,11 @@ class NextionSimple : public Component {
   }
 
  protected:
-  HOT_ATTR void process_command(const uint8_t* data, size_t length);
+  void process_command(const uint8_t* data, size_t length);
 
   bool prepare_nextion_for_upload_();
-  HOT_ATTR bool wait_for_nextion_ack_();
-  HOT_ATTR bool send_data_to_nextion_(const uint8_t* data, size_t data_size);
+  bool wait_for_nextion_ack_();
+  bool send_data_to_nextion_(const uint8_t* data, size_t data_size);
   uint32_t get_free_heap_();
 
   bool upload_tft_arduino_();
