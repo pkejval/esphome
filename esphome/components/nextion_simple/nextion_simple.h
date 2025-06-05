@@ -65,7 +65,6 @@ class NextionSimple : public Component {
     va_start(args, format);
     int n = vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
-
     if (n < 0) {
       ESP_LOGE(TAG, "Error formatting command");
       return;

@@ -108,6 +108,7 @@ bool NextionSimple::upload_end_(bool successful) {
 
 #ifdef USE_ARDUINO
 #include <HTTPClient.h>
+
 bool NextionSimple::upload_tft_arduino_() {
   HTTPClient http;
   http.setTimeout(10000);
@@ -196,6 +197,7 @@ bool NextionSimple::upload_tft_arduino_() {
 #ifdef USE_ESP_IDF
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
+
 bool NextionSimple::upload_tft_esp_idf_() {
   esp_http_client_config_t cfg = {};
   cfg.url = this->tft_url_.c_str();

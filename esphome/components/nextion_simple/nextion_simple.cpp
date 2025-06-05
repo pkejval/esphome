@@ -29,7 +29,6 @@ HOT_ATTR void NextionSimple::loop() {
   if (available == 0) {
     return;
   }
-
   size_t space_left = BUFFER_SIZE - this->buffer_index_;
   if (space_left == 0) {
     static constexpr size_t KEEP = 20;
@@ -42,7 +41,6 @@ HOT_ATTR void NextionSimple::loop() {
   size_t to_read = (available < space_left) ? available : space_left;
   size_t read_bytes = this->uart_parent_->read_array(this->rx_buffer_ + this->buffer_index_, to_read);
   this->buffer_index_ += read_bytes;
-
   size_t pos = 0;
   while (pos + 2 < this->buffer_index_) {
     if (this->rx_buffer_[pos] == 0xFF &&
@@ -183,6 +181,15 @@ void NextionSimple::reset_nextion() {
   delay(1000);
 #endif
   ESP_LOGI(TAG, "Nextion reset complete");
+}
+
+void NextionSimple::upload_tft() {
+  this->upload_in_progress_ = true;
+#ifdef USE_ARDUINO
+  this->upload_tft_arduino_();
+#elif defined(USE_ESP_IDF)
+  this->upload_tft_esp_idf_();
+#endif
 }
 
 uint32_t NextionSimple::get_free_heap_() {
