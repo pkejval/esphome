@@ -12,7 +12,7 @@ static const uint8_t NEXTION_END_CMD[3] = {0xFF, 0xFF, 0xFF};
 
 void NextionIntelligent::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Nextion Intelligent Display...");
-  
+
   // Call lambda if set
   if (this->lambda_ != nullptr) {
     this->lambda_(*this);
@@ -35,28 +35,25 @@ void NextionIntelligent::handle_rx_byte_(uint8_t byte) {
     this->recv_buffer_pos_ = 0;
     return;
   }
-  
+
   // We're in COMMAND state, store received byte
   this->recv_buffer_[this->recv_buffer_pos_++] = byte;
-  
+
   // Check if we've received all three 0xFF bytes (command terminator)
-  if (this->recv_buffer_pos_ >= 3 && 
-      this->recv_buffer_[0] == 0xFF &&
-      this->recv_buffer_[1] == 0xFF &&
+  if (this->recv_buffer_pos_ >= 3 && this->recv_buffer_[0] == 0xFF && this->recv_buffer_[1] == 0xFF &&
       this->recv_buffer_[2] == 0xFF) {
-    
     // Process received command
     if (this->recv_command_ == 0x88 && this->on_boot_callback_ != nullptr) {
       // Boot command (0x88) - trigger the registered callback
       ESP_LOGD(TAG, "Received boot command from Nextion");
       this->on_boot_callback_();
     }
-    
+
     // Reset state machine for next command
     this->recv_state_ = NextionRecvState::IDLE;
     return;
   }
-  
+
   // If buffer is full but we haven't received terminator, reset state machine
   if (this->recv_buffer_pos_ >= sizeof(this->recv_buffer_)) {
     this->recv_state_ = NextionRecvState::IDLE;
@@ -71,13 +68,13 @@ void NextionIntelligent::dump_config() {
 void NextionIntelligent::send_command(const std::string &command) {
   // Send the command string
   write_str(command.c_str());
-  
+
   // Send the three ending bytes
   write_array(NEXTION_END_CMD, sizeof(NEXTION_END_CMD));
-  
+
   // Flush UART buffer to ensure command is sent immediately
   flush();
-  
+
   ESP_LOGV(TAG, "Sent command: %s", command.c_str());
 }
 
@@ -102,10 +99,10 @@ void NextionIntelligent::set_component_text_printf(const std::string &component_
   va_start(args, format);
   int ret = vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  
+
   if (ret < 0)
     return;
-  
+
   this->set_component_text(component_name, buffer);
 }
 
@@ -130,7 +127,7 @@ void NextionIntelligent::set_component_background_color(const std::string &compo
   int g6 = (color.g * 63) / 255;
   int b5 = (color.b * 31) / 255;
   int rgb565 = (r5 << 11) | (g6 << 5) | b5;
-  
+
   this->set_component_background_color(component_name, rgb565);
 }
 
@@ -145,7 +142,7 @@ void NextionIntelligent::set_component_font_color(const std::string &component_n
   int g6 = (color.g * 63) / 255;
   int b5 = (color.b * 31) / 255;
   int rgb565 = (r5 << 11) | (g6 << 5) | b5;
-  
+
   this->set_component_font_color(component_name, rgb565);
 }
 
@@ -155,5 +152,5 @@ void NextionIntelligent::set_page(int page) {
   this->current_page_ = page;
 }
 
-} // namespace nextion_intelligent
-} // namespace esphome
+}  // namespace nextion_intelligent
+}  // namespace esphome

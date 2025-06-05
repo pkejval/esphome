@@ -14,7 +14,7 @@ NextionSimple::NextionSimple() {}
 
 void NextionSimple::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Nextion Simple...");
-  
+
   if (this->uart_parent_ == nullptr) {
     ESP_LOGE(TAG, "UART parent is not set!");
     this->mark_failed();
@@ -31,12 +31,12 @@ void NextionSimple::loop() {
 
   static uint8_t buffer[64];
   static size_t buffer_index = 0;
-  
+
   // Early return if no data available
   size_t available = this->uart_parent_->available();
   if (available == 0)
     return;
-  
+
   // Batch read data into buffer
   size_t space_available = sizeof(buffer) - buffer_index;
   if (space_available > 0) {
@@ -44,7 +44,7 @@ void NextionSimple::loop() {
     size_t bytes_read = this->uart_parent_->read_array(&buffer[buffer_index], bytes_to_read);
     buffer_index += bytes_read;
   }
-  
+
   // Process all complete commands in buffer
   size_t pos = 0;
   while (pos + 2 < buffer_index) {
@@ -54,10 +54,10 @@ void NextionSimple::loop() {
       if (pos > 0) {
         this->process_command(buffer, pos);
       }
-      
+
       // Move past this command and its terminator
       pos += 3;
-      
+
       // Shift remaining data to start of buffer
       if (pos < buffer_index) {
         memmove(buffer, buffer + pos, buffer_index - pos);
@@ -65,7 +65,7 @@ void NextionSimple::loop() {
       } else {
         buffer_index = 0;
       }
-      
+
       // Reset position for next search
       pos = 0;
     } else {
@@ -73,10 +73,10 @@ void NextionSimple::loop() {
       pos++;
     }
   }
-  
+
   // Handle buffer overflow - preserve last bytes in case of partial command
   if (buffer_index >= sizeof(buffer) - 3) {
-    const size_t keep_bytes = 20; // Keep enough for potential partial command
+    const size_t keep_bytes = 20;  // Keep enough for potential partial command
     if (buffer_index > keep_bytes) {
       memmove(buffer, buffer + buffer_index - keep_bytes, keep_bytes);
       buffer_index = keep_bytes;
@@ -84,30 +84,30 @@ void NextionSimple::loop() {
   }
 }
 
-void NextionSimple::process_command(const uint8_t* command, size_t length) {
+void NextionSimple::process_command(const uint8_t *command, size_t length) {
   // Early return for empty commands
-  if (length == 0) 
+  if (length == 0)
     return;
-    
+
   // Extract the command code (first byte)
   const uint8_t cmd_code = command[0];
-  
+
   // Fast path processing for common command types
   switch (cmd_code) {
-    case 0x66: // Current page ID
+    case 0x66:  // Current page ID
       if (length >= 2) {
         // Store the page number and trigger callback
-        this->current_page_ = command[1];   
+        this->current_page_ = command[1];
         ESP_LOGD(TAG, "Current page: %d", this->current_page_);
         this->on_page_callback_.call(this->current_page_);
       } else {
         ESP_LOGW(TAG, "Invalid page command (too short)");
       }
       break;
-      
-    case 0x88: { // System startup / ready notification
+
+    case 0x88: {  // System startup / ready notification
       const uint32_t current_time = millis();
-      
+
       // Apply rate limiting to ready callbacks
       if (current_time - this->last_nextion_ready_time_ >= this->nextion_ready_cooldown_) {
         this->last_nextion_ready_time_ = current_time;
@@ -131,25 +131,15 @@ void NextionSimple::dump_config() {
 }
 
 // Send a command to the Nextion display
-void NextionSimple::send_command(const std::string &command) {
+void NextionSimple::send_command(std::string_view command) {
   if (this->upload_in_progress_) {
-    ESP_LOGW(TAG, "Upload in progress, not sending command: %s", command.c_str());
+    ESP_LOGW(TAG, "Upload in progress, not sending command: %s", std::string(command).c_str());
     return;
   }
 
-  static char buffer[256];
-  size_t command_length = command.length();
-  if (command_length + 3 <= sizeof(buffer)) {
-    memcpy(buffer, command.c_str(), command_length);
-    buffer[command_length] = '\xFF';
-    buffer[command_length + 1] = '\xFF';
-    buffer[command_length + 2] = '\xFF';
-    this->uart_parent_->write_array((const uint8_t *)buffer, command_length + 3);
-  } else {
-    // Fallback for longer commands
-    std::string full_command = command + "\xFF\xFF\xFF";
-    this->uart_parent_->write_array((const uint8_t *)full_command.c_str(), full_command.length());
-  }
+  const uint8_t *data = reinterpret_cast<const uint8_t *>(command.data());
+  this->uart_parent_->write_array(data, command.size());
+  this->uart_parent_->write_array(NEXTION_CMD_TERMINATOR, sizeof(NEXTION_CMD_TERMINATOR));
 }
 
 // Send a formatted command to the Nextion display
@@ -159,24 +149,24 @@ void NextionSimple::send_command_printf(const char *format, ...) {
     ESP_LOGW(TAG, "Upload in progress, not sending formatted command");
     return;
   }
-  
+
   // Format the command
   char buffer[256];
   va_list args;
   va_start(args, format);
   int ret = vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  
+
   if (ret < 0) {
     ESP_LOGE(TAG, "Error formatting command");
     return;
   }
-  
+
   if (ret >= sizeof(buffer)) {
     ESP_LOGE(TAG, "Command too long for buffer");
     return;
   }
-  
+
   // Send the formatted command
   this->send_command(buffer);
 }
@@ -188,7 +178,8 @@ void NextionSimple::set_component_value(const std::string &component_name, float
 }
 
 // Set component text
-void NextionSimple::set_component_text(const std::string &component_name, const std::string &text, const std::vector<std::string> &args) {
+void NextionSimple::set_component_text(const std::string &component_name, const std::string &text,
+                                       const std::vector<std::string> &args) {
   if (args.empty()) {
     // Simple text setting without formatting
     this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), text.c_str());
@@ -197,14 +188,14 @@ void NextionSimple::set_component_text(const std::string &component_name, const 
     std::string formatted_text = text;
     size_t pos = 0;
     size_t arg_index = 0;
-    
+
     // Replace all %s placeholders with the corresponding arg
     while ((pos = formatted_text.find("%s", pos)) != std::string::npos && arg_index < args.size()) {
       formatted_text.replace(pos, 2, args[arg_index]);
       pos += args[arg_index].length();
       arg_index++;
     }
-    
+
     this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), formatted_text.c_str());
   }
 }
@@ -215,17 +206,17 @@ void NextionSimple::set_component_text_printf(const std::string &component_name,
   va_start(args, format);
   int ret = vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  
+
   if (ret < 0) {
     ESP_LOGE(TAG, "Error formatting text");
     return;
   }
-  
+
   if (ret >= sizeof(buffer)) {
     ESP_LOGE(TAG, "Text too long for buffer");
     return;
   }
-  
+
   this->set_component_text(component_name, buffer);
 }
 
@@ -240,9 +231,6 @@ void NextionSimple::set_component_picc1(const std::string &component_name, int v
 }
 
 // Convert ESPHome Color to Nextion color (RGB565)
-inline int NextionSimple::color_to_integer_(Color color) {
-  return ((color.r & 0xF8) << 8) | ((color.g & 0xFC) << 3) | (color.b >> 3);
-}
 
 // Set component background color (integer)
 void NextionSimple::set_component_background_color(const std::string &component_name, int color) {
@@ -267,22 +255,18 @@ void NextionSimple::set_component_font_color(const std::string &component_name, 
 }
 
 // Change Nextion page
-void NextionSimple::set_page(int page) {
-  this->send_command_printf("page %d", page);
-}
+void NextionSimple::set_page(int page) { this->send_command_printf("page %d", page); }
 
-void NextionSimple::goto_page(int page) {
-  this->set_page(page);
-}
+void NextionSimple::goto_page(int page) { this->set_page(page); }
 
 void NextionSimple::reset_nextion() {
   ESP_LOGI(TAG, "Resetting Nextion...");
   this->send_command("rest");
-  #ifdef USE_ESP_IDF
+#ifdef USE_ESP_IDF
   vTaskDelay(pdMS_TO_TICKS(1000));
-  #else
-  delay(1000);
-  #endif
+#else
+  delay(1000);  // NOLINT
+#endif
   ESP_LOGI(TAG, "Nextion reset completed");
 }
 
