@@ -29,6 +29,8 @@ class NextionSimple : public Component {
   void set_component_background_color(const std::string &component_name, Color color);
   void set_component_font_color(const std::string &component_name, int color);
   void set_component_font_color(const std::string &component_name, Color color);
+  void set_component_visibility(const std::string &component_name, bool state);
+  void set_component_visibility(const std::string &component_name, int state);
   void set_nextion_ready_cooldown(uint32_t cooldown) { nextion_ready_cooldown_ = cooldown; }
   void set_page(int page);
   void goto_page(int page);

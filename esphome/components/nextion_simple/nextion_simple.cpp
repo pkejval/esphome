@@ -163,6 +163,14 @@ void NextionSimple::set_component_font_color(const std::string &component_name, 
   this->send_command_cstr("%s.pco=%d", component_name.c_str(), col);
 }
 
+void NextionSimple::set_component_visibility(const std::string &component_name, bool state) {
+  this->set_component_visibility(component_name, (int)state);
+}
+
+void NextionSimple::set_component_visibility(const std::string &component_name, int state) {
+  this->send_command_cstr("%s.vis=%d", component_name.c_str(), state);
+}
+
 void NextionSimple::set_page(int page) {
   this->send_command_cstr("page %d", page);
 }
