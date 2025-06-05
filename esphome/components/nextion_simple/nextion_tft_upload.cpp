@@ -52,7 +52,7 @@ bool NextionSimple::prepare_nextion_for_upload_() {
   return false;
 }
 
-bool NextionSimple::wait_for_nextion_ack_() {
+HOT_ATTR bool NextionSimple::wait_for_nextion_ack_() {
   uint32_t timeout = millis() + 10000;
   while (millis() < timeout) {
     if (this->uart_parent_->available()) {
@@ -72,7 +72,7 @@ bool NextionSimple::wait_for_nextion_ack_() {
   return false;
 }
 
-bool NextionSimple::send_data_to_nextion_(const uint8_t* data, size_t data_size) {
+HOT_ATTR bool NextionSimple::send_data_to_nextion_(const uint8_t* data, size_t data_size) {
   size_t sent = 0;
   while (sent < data_size) {
     size_t chunk = (data_size - sent < 64) ? (data_size - sent) : 64;

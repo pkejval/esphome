@@ -21,7 +21,7 @@ class NextionSimple : public Component {
   NextionSimple();
 
   void setup() override;
-  void loop() override HOT_ATTR;
+  HOT_ATTR void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
 
@@ -41,8 +41,41 @@ class NextionSimple : public Component {
   void set_page(int page);
   void goto_page(int page);
 
-  inline void send_command(const char *cmd, size_t len) HOT_ATTR;
-  inline void send_command_cstr(const char *format, ...) HOT_ATTR;
+  inline HOT_ATTR void send_command(const char *cmd, size_t len) {
+    if (this->upload_in_progress_) {
+      return;
+    }
+    if (len > 256) {
+      len = 256;
+    }
+    char buffer[256 + 3];
+    memcpy(buffer, cmd, len);
+    buffer[len]     = static_cast<char>(0xFF);
+    buffer[len + 1] = static_cast<char>(0xFF);
+    buffer[len + 2] = static_cast<char>(0xFF);
+    this->uart_parent_->write_array(reinterpret_cast<const uint8_t *>(buffer), len + 3);
+  }
+
+  inline HOT_ATTR void send_command_cstr(const char *format, ...) {
+    if (this->upload_in_progress_) {
+      return;
+    }
+    char buf[128];
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    if (n < 0) {
+      ESP_LOGE(TAG, "Error formatting command");
+      return;
+    }
+    if (static_cast<size_t>(n) >= sizeof(buf)) {
+      ESP_LOGW(TAG, "Command too long (%d bytes), truncating", n);
+      n = sizeof(buf) - 1;
+    }
+    this->send_command(buf, static_cast<size_t>(n));
+  }
 
   void reset_nextion();
   void upload_tft();
@@ -60,11 +93,11 @@ class NextionSimple : public Component {
   }
 
  protected:
-  void process_command(const uint8_t* data, size_t length) HOT_ATTR;
+  HOT_ATTR void process_command(const uint8_t* data, size_t length);
 
   bool prepare_nextion_for_upload_();
-  bool wait_for_nextion_ack_() HOT_ATTR;
-  bool send_data_to_nextion_(const uint8_t* data, size_t data_size) HOT_ATTR;
+  HOT_ATTR bool wait_for_nextion_ack_();
+  HOT_ATTR bool send_data_to_nextion_(const uint8_t* data, size_t data_size);
   uint32_t get_free_heap_();
 
   bool upload_tft_arduino_();
@@ -91,6 +124,8 @@ class NextionSimple : public Component {
   CallbackManager<void()> on_setup_callback_;
   CallbackManager<void(int)> on_page_callback_;
   CallbackManager<void()> on_nextion_ready_callback_;
+
+  static const char *TAG;
 };
 
 template<typename... Ts>

@@ -7,7 +7,7 @@
 namespace esphome {
 namespace nextion_simple {
 
-static const char *TAG = "nextion_simple";
+const char *NextionSimple::TAG = "nextion_simple";
 
 NextionSimple::NextionSimple() {}
 
@@ -21,7 +21,7 @@ void NextionSimple::setup() {
   this->on_setup_callback_.call();
 }
 
-void NextionSimple::loop() HOT_ATTR {
+HOT_ATTR void NextionSimple::loop() {
   if (this->upload_in_progress_) {
     return;
   }
@@ -64,7 +64,7 @@ void NextionSimple::loop() HOT_ATTR {
   }
 }
 
-void NextionSimple::process_command(const uint8_t* data, size_t length) HOT_ATTR {
+HOT_ATTR void NextionSimple::process_command(const uint8_t* data, size_t length) {
   if (length == 0) {
     return;
   }
@@ -100,42 +100,6 @@ void NextionSimple::process_command(const uint8_t* data, size_t length) HOT_ATTR
 void NextionSimple::dump_config() {
   ESP_LOGCONFIG(TAG, "Nextion Simple config:");
   ESP_LOGCONFIG(TAG, "  TFT URL: %s", this->tft_url_.c_str());
-}
-
-inline void NextionSimple::send_command(const char *cmd, size_t len) {
-  if (this->upload_in_progress_) {
-    return;
-  }
-  if (len > 256) {
-    len = 256;
-  }
-  char buffer[256 + 3];
-  memcpy(buffer, cmd, len);
-  buffer[len]     = static_cast<char>(0xFF);
-  buffer[len + 1] = static_cast<char>(0xFF);
-  buffer[len + 2] = static_cast<char>(0xFF);
-  this->uart_parent_->write_array(reinterpret_cast<const uint8_t *>(buffer), len + 3);
-}
-
-inline void NextionSimple::send_command_cstr(const char *format, ...) {
-  if (this->upload_in_progress_) {
-    return;
-  }
-  char buf[128];
-  va_list args;
-  va_start(args, format);
-  int n = vsnprintf(buf, sizeof(buf), format, args);
-  va_end(args);
-
-  if (n < 0) {
-    ESP_LOGE(TAG, "Error formatting command");
-    return;
-  }
-  if (static_cast<size_t>(n) >= sizeof(buf)) {
-    ESP_LOGW(TAG, "Command too long (%d bytes), truncating", n);
-    n = sizeof(buf) - 1;
-  }
-  this->send_command(buf, static_cast<size_t>(n));
 }
 
 void NextionSimple::set_component_value(const std::string &component_name, float value) {
