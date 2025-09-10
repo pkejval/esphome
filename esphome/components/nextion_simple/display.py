@@ -2,7 +2,6 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
 from esphome.components import uart
-from esphome.const import CONF_ID, CONF_UART_ID, CONF_TRIGGER_ID
 
 DEPENDENCIES = ["uart"]
 
@@ -26,7 +25,7 @@ CONF_NEXTION_READY_COOLDOWN = "nextion_ready_cooldown"
 
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionSimple),
-    cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
+    cv.Required("uart_id"): cv.use_id(uart.UARTComponent),
     cv.Optional(CONF_TFT_URL): cv.string,
     cv.Optional(CONF_ON_SETUP): automation.validate_automation(single=True),
     cv.Optional(CONF_ON_PAGE): automation.validate_automation(single=True),
@@ -35,24 +34,30 @@ CONFIG_SCHEMA = cv.Schema({
 })
 
 async def to_code(config):
-    var = cg.new_Pvariable(config[CONF_ID])
+    var = cg.new_Pvariable(config["id"])
     await cg.register_component(var, config)
-    paren = await cg.get_variable(config[CONF_UART_ID])
-    cg.add(var.set_uart_parent(paren))
+
+    uart_par = await cg.get_variable(config["uart_id"])
+    cg.add(var.set_uart_parent(uart_par))
+
     if CONF_TFT_URL in config:
         cg.add(var.set_tft_url(config[CONF_TFT_URL]))
+
     if CONF_NEXTION_READY_COOLDOWN in config:
         cg.add(var.set_nextion_ready_cooldown(int(config[CONF_NEXTION_READY_COOLDOWN].total_milliseconds)))
 
+    # on_setup: máme přímo callback na parentu, není třeba vytvářet Trigger instanci
     if CONF_ON_SETUP in config:
         await automation.build_automation(var.add_on_setup_callback, [], config[CONF_ON_SETUP])
+
+    # on_page: vytvoř anonymní trigger instanci s konstruktorem (parent = var)
     if CONF_ON_PAGE in config:
-        trig = cg.new_Pvariable(config[CONF_ID] + "_page_trigger", nextion_simple_ns.class_("NextionPageTrigger"))
-        cg.add(trig.__init__(var))
+        trig = cg.new_Pvariable(nextion_simple_ns.class_("NextionPageTrigger"), var)
         await automation.build_automation(trig, [(cg.int_, "page")], config[CONF_ON_PAGE])
+
+    # on_nextion_ready: totéž – žádné stringové jméno, rovnou instance s parentem
     if CONF_ON_NEXTION_READY in config:
-        trig = cg.new_Pvariable(config[CONF_ID] + "_nx_ready_trigger", nextion_simple_ns.class_("NextionReadyTrigger"))
-        cg.add(trig.__init__(var))
+        trig = cg.new_Pvariable(nextion_simple_ns.class_("NextionReadyTrigger"), var)
         await automation.build_automation(trig, [], config[CONF_ON_NEXTION_READY])
 
 # Actions
