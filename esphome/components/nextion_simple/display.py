@@ -28,123 +28,42 @@ CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionSimple),
     cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
     cv.Optional(CONF_TFT_URL): cv.string,
-    cv.Optional(CONF_ON_SETUP): automation.validate_automation({
-        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionSetupTrigger),
-    }),
-    cv.Optional(CONF_ON_PAGE): automation.validate_automation({
-        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionPageTrigger),
-    }),
-    cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation({
-        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionReadyTrigger),
-    }),
-    cv.Optional(CONF_NEXTION_READY_COOLDOWN, default="1s"): cv.positive_time_period_milliseconds,
-}).extend(cv.COMPONENT_SCHEMA)
-
-SET_COMPONENT_VALUE_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.templatable(cv.Any(cv.int_, cv.float_)),
+    cv.Optional(CONF_ON_SETUP): automation.validate_automation(single=True),
+    cv.Optional(CONF_ON_PAGE): automation.validate_automation(single=True),
+    cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation(single=True),
+    cv.Optional(CONF_NEXTION_READY_COOLDOWN, default=500): cv.positive_time_period_milliseconds,
 })
-
-SET_COMPONENT_TEXT_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.templatable(cv.string),
-})
-
-SET_COMPONENT_PICC_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.templatable(cv.int_),
-})
-
-SET_COMPONENT_PICC1_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-    cv.Required(CONF_COMPONENT_NAME): cv.string,
-    cv.Required(CONF_VALUE): cv.templatable(cv.int_),
-})
-
-def validate_set_page_action(config):
-    if isinstance(config, int):
-        config = {CONF_PAGE: config}
-    return cv.Schema({
-        cv.GenerateID(): cv.use_id(NextionSimple),
-        cv.Required(CONF_PAGE): cv.templatable(cv.int_),
-    })(config)
-
-UPLOAD_TFT_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.use_id(NextionSimple),
-})
-
-@automation.register_action("nextion.set_value", nextion_simple_ns.class_("SetComponentValueAction"), SET_COMPONENT_VALUE_SCHEMA)
-async def nextion_simple_set_component_value_to_code(config, action_id, template_arg, args):
-    parent = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, parent)
-    cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    template_ = await cg.templatable(config[CONF_VALUE], args, float)
-    cg.add(var.set_value(template_))
-    return var
-
-@automation.register_action("nextion.set_text", nextion_simple_ns.class_("SetComponentTextAction"), SET_COMPONENT_TEXT_SCHEMA)
-async def nextion_simple_set_component_text_to_code(config, action_id, template_arg, args):
-    parent = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, parent)
-    cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    template_ = await cg.templatable(config[CONF_VALUE], args, cg.std_string)
-    cg.add(var.set_value(template_))
-    return var
-
-@automation.register_action("nextion.set_picc", nextion_simple_ns.class_("SetComponentPiccAction"), SET_COMPONENT_PICC_SCHEMA)
-async def nextion_simple_set_component_picc_to_code(config, action_id, template_arg, args):
-    parent = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, parent)
-    cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    cg.add(var.set_value(config[CONF_VALUE]))
-    return var
-
-@automation.register_action("nextion.set_picc1", nextion_simple_ns.class_("SetComponentPicc1Action"), SET_COMPONENT_PICC1_SCHEMA)
-async def nextion_simple_set_component_picc1_to_code(config, action_id, template_arg, args):
-    parent = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, parent)
-    cg.add(var.set_component_name(config[CONF_COMPONENT_NAME]))
-    cg.add(var.set_value(config[CONF_VALUE]))
-    return var
-
-@automation.register_action("nextion.set_page", nextion_simple_ns.class_("SetPageAction"), validate_set_page_action)
-async def nextion_simple_set_page_to_code(config, action_id, template_arg, args):
-    parent = await cg.get_variable(config[CONF_ID])
-    var = cg.new_Pvariable(action_id, template_arg, parent)
-    page = await cg.templatable(config[CONF_PAGE], args, int)
-    cg.add(var.set_page(page))
-    return var
-
-@automation.register_action("nextion.upload_tft", nextion_simple_ns.class_("UploadTftAction"), UPLOAD_TFT_SCHEMA)
-async def nextion_simple_upload_tft_to_code(config, action_id, template_arg, args):
-    parent = await cg.get_variable(config[CONF_ID])
-    return cg.new_Pvariable(action_id, template_arg, parent)
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-    uart_comp = await cg.get_variable(config[CONF_UART_ID])
-    cg.add(var.set_uart_parent(uart_comp))
-
+    paren = await cg.get_variable(config[CONF_UART_ID])
+    cg.add(var.set_uart_parent(paren))
     if CONF_TFT_URL in config:
         cg.add(var.set_tft_url(config[CONF_TFT_URL]))
+    if CONF_NEXTION_READY_COOLDOWN in config:
+        cg.add(var.set_nextion_ready_cooldown(int(config[CONF_NEXTION_READY_COOLDOWN].total_milliseconds)))
 
     if CONF_ON_SETUP in config:
-        for conf in config.get(CONF_ON_SETUP, []):
-            trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
-            await automation.build_automation(trig, [], conf)
-
+        await automation.build_automation(var.add_on_setup_callback, [], config[CONF_ON_SETUP])
     if CONF_ON_PAGE in config:
-        for conf in config.get(CONF_ON_PAGE, []):
-            trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
-            await automation.build_automation(trig, [(cg.int_, "x")], conf)
-
+        trig = cg.new_Pvariable(config[CONF_ID] + "_page_trigger", nextion_simple_ns.class_("NextionPageTrigger"))
+        cg.add(trig.__init__(var))
+        await automation.build_automation(trig, [(cg.int_, "page")], config[CONF_ON_PAGE])
     if CONF_ON_NEXTION_READY in config:
-        for conf in config.get(CONF_ON_NEXTION_READY, []):
-            trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
-            await automation.build_automation(trig, [], conf)
+        trig = cg.new_Pvariable(config[CONF_ID] + "_nx_ready_trigger", nextion_simple_ns.class_("NextionReadyTrigger"))
+        cg.add(trig.__init__(var))
+        await automation.build_automation(trig, [], config[CONF_ON_NEXTION_READY])
 
-    cg.add(var.set_nextion_ready_cooldown(config[CONF_NEXTION_READY_COOLDOWN]))
+# Actions
+SetComponentValueAction = nextion_simple_ns.class_("SetComponentValueAction", automation.Action.template())
+SetComponentTextAction = nextion_simple_ns.class_("SetComponentTextAction", automation.Action.template())
+SetComponentTextPrintfAction = nextion_simple_ns.class_("SetComponentTextPrintfAction", automation.Action.template())
+SetComponentPiccAction = nextion_simple_ns.class_("SetComponentPiccAction", automation.Action.template())
+SetComponentPicc1Action = nextion_simple_ns.class_("SetComponentPicc1Action", automation.Action.template())
+SetComponentBackgroundColorAction = nextion_simple_ns.class_("SetComponentBackgroundColorAction", automation.Action.template())
+SetComponentFontColorAction = nextion_simple_ns.class_("SetComponentFontColorAction", automation.Action.template())
+SetComponentVisibilityAction = nextion_simple_ns.class_("SetComponentVisibilityAction", automation.Action.template())
+SetPageAction = nextion_simple_ns.class_("SetPageAction", automation.Action.template())
+
+# You can extend with YAML action schemas as in your original if needed.

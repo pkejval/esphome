@@ -5,6 +5,10 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/color.h"
 
+#include <cstdarg>
+#include <cstring>
+#include <functional>
+
 namespace esphome {
 namespace nextion_simple {
 
@@ -12,14 +16,17 @@ class NextionSimple : public Component {
  public:
   NextionSimple();
 
+  // esphome::Component
   void setup() override;
   void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
 
+  // Wiring
   void set_uart_parent(uart::UARTComponent *parent) { this->uart_parent_ = parent; }
   void set_tft_url(const std::string &tft_url) { this->tft_url_ = tft_url; }
 
+  // High-level API (hot paths bez alokací)
   void set_component_value(const std::string &component_name, float value);
   void set_component_text(const std::string &component_name, const std::string &text, const std::vector<std::string> &args = {});
   void set_component_text_printf(const std::string &component_name, const char *format, ...);
@@ -35,257 +42,251 @@ class NextionSimple : public Component {
   void set_page(int page);
   void goto_page(int page);
 
+  // Low-level fast send: one buffered write + 0xFF 0xFF 0xFF
   inline void send_command(const char *cmd, size_t len) {
-    if (this->upload_in_progress_) {
-      return;
-    }
-    if (len > 256) {
-      len = 256;
-    }
-    char buffer[256 + 3];
+    if (this->upload_in_progress_ || this->uart_parent_ == nullptr) return;
+    if (len > kMaxCmd) len = kMaxCmd;
+    char buffer[kMaxCmd + 3];
     memcpy(buffer, cmd, len);
     buffer[len]     = static_cast<char>(0xFF);
     buffer[len + 1] = static_cast<char>(0xFF);
     buffer[len + 2] = static_cast<char>(0xFF);
     this->uart_parent_->write_array(reinterpret_cast<const uint8_t *>(buffer), len + 3);
   }
+  void send_command_cstr(const char *fmt, ...);
 
-  inline void send_command_cstr(const char *format, ...) {
-    if (this->upload_in_progress_) {
-      return;
-    }
-    char buf[128];
-    va_list args;
-    va_start(args, format);
-    int n = vsnprintf(buf, sizeof(buf), format, args);
-    va_end(args);
-    if (n < 0) {
-      ESP_LOGE(TAG, "Error formatting command");
-      return;
-    }
-    if (static_cast<size_t>(n) >= sizeof(buf)) {
-      ESP_LOGW(TAG, "Command too long (%d bytes), truncating", n);
-      n = sizeof(buf) - 1;
-    }
-    this->send_command(buf, static_cast<size_t>(n));
-  }
-
+  // Maintenance
   void reset_nextion();
   void upload_tft();
   bool is_uploading() const { return this->upload_in_progress_; }
-  int get_current_page() const { return this->current_page_; }
+  int  get_current_page() const { return this->current_page_; }
 
-  void add_on_setup_callback(std::function<void()> &&callback) {
-    this->on_setup_callback_.add(std::move(callback));
-  }
-  void add_on_page_callback(std::function<void(int)> &&callback) {
-    this->on_page_callback_.add(std::move(callback));
-  }
-  void add_on_nextion_ready_callback(std::function<void()> &&callback) {
-    this->on_nextion_ready_callback_.add(std::move(callback));
-  }
+  // Callbacks
+  void add_on_setup_callback(std::function<void()> &&callback) { this->on_setup_callback_.add(std::move(callback)); }
+  void add_on_page_callback(std::function<void(int)> &&callback) { this->on_page_callback_.add(std::move(callback)); }
+  void add_on_nextion_ready_callback(std::function<void()> &&callback) { this->on_nextion_ready_callback_.add(std::move(callback)); }
+
+  static const char *TAG;
 
  protected:
-  void process_command(const uint8_t* data, size_t length);
-
-  bool prepare_nextion_for_upload_();
-  bool wait_for_nextion_ack_();
-  bool send_data_to_nextion_(const uint8_t* data, size_t data_size);
-  uint32_t get_free_heap_();
-
+  // ====== Upload internals ======
   bool upload_tft_arduino_();
   bool upload_tft_esp_idf_();
-  bool upload_end_(bool successful);
 
+  // (ESP-IDF) helpers
+  bool prepare_nextion_for_upload_idf_(uint32_t baud_rate);
+  bool wait_for_ack_idf_(uint32_t timeout_ms, std::string &out);
+  int  upload_by_chunks_idf_(void *http_client, uint32_t &range_start); // forward decl (esp_http_client_handle_t*)
+
+  // ====== INIT-only RX parser ======
+  void drain_uart_into_ring_();
+  void parse_from_ring_init_only_();
+  void handle_frame_init_only_(const uint8_t *frame, size_t len);
+
+  // ====== Modes ======
+  enum class NxMode : uint8_t { INIT, RUN_WRITEONLY, DIAG_CHECK };
+  void start_init_handshake_();
+  void enter_writeonly_mode_();
+  void request_health_check_();
+  void diagnostic_tick_();
+
+  // ====== Utils ======
   inline int color_to_integer_(Color color) {
-    return ((color.r & 0xF8) << 8) | ((color.g & 0xFC) << 3) | (color.b >> 3);
+    uint16_t r = (color.r >> 3) & 0x1F;
+    uint16_t g = (color.g >> 2) & 0x3F;
+    uint16_t b = (color.b >> 3) & 0x1F;
+    return (r << 11) | (g << 5) | (b);
   }
 
+  uint32_t get_free_heap_();
+
+  // ====== State ======
   uart::UARTComponent *uart_parent_{nullptr};
   std::string tft_url_;
-  uint32_t content_length_{0};
+
+  // TX
+  static constexpr size_t kMaxCmd = 256;
+  uint8_t bkcmd_{3}; // INIT chce odpovědi, runtime 0
+
+  // RX ring
+  static constexpr size_t RB_SIZE = 1024; // 2^N
+  uint8_t rx_rb_[RB_SIZE]{};
+  size_t rb_head_{0};
+  size_t rb_tail_{0};
+  inline bool rb_push_(uint8_t b) {
+    size_t nh = (rb_head_ + 1) & (RB_SIZE - 1);
+    if (nh == rb_tail_) return false;
+    rx_rb_[rb_head_] = b; rb_head_ = nh; return true;
+  }
+  inline bool rb_pop_(uint8_t &b) {
+    if (rb_head_ == rb_tail_) return false;
+    b = rx_rb_[rb_tail_]; rb_tail_ = (rb_tail_ + 1) & (RB_SIZE - 1); return true;
+  }
+
+  // INIT parser state
+  bool rx_enabled_{true};
+  bool handshake_done_{false};
+  int  current_page_{-1};
+  uint32_t init_deadline_ms_{0};
+
+  // Optional diag
+  uint32_t diag_deadline_ms_{0};
+  bool saw_expected_reply_{false};
+
+  // Ready cooldown
+  uint32_t nextion_ready_cooldown_{500};
+  uint32_t last_ready_ms_{0};
+
+  // Upload flags & params
   bool upload_in_progress_{false};
+  bool is_updating_{false};
+  bool upload_first_chunk_sent_{false};
+  bool ignore_is_setup_{false};
+  uint32_t original_baud_rate_{0};
+  uint32_t tft_size_{0};
+  uint32_t content_length_{0};
 
-  static constexpr size_t BUFFER_SIZE = 64;
-  uint8_t rx_buffer_[BUFFER_SIZE];
-  size_t buffer_index_{0};
+  // Mode
+  NxMode mode_{NxMode::INIT};
 
-  int current_page_{0};
-  uint32_t nextion_ready_cooldown_{1000};
-  uint32_t last_nextion_ready_time_{0};
-
+  // Callbacks
   CallbackManager<void()> on_setup_callback_;
   CallbackManager<void(int)> on_page_callback_;
   CallbackManager<void()> on_nextion_ready_callback_;
-
-  static const char *TAG;
 };
+
+// ===================== Actions =====================
 
 template<typename... Ts>
 class SetComponentValueAction : public Action<Ts...> {
  public:
-  SetComponentValueAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentValueAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
-  void set_value(std::function<float(Ts...)> fn) { this->value_func_ = fn; }
-  void play(Ts... x) override {
-    float val = this->value_func_(x...);
-    this->parent_->set_component_value(this->component_name_, val);
-  }
+  void set_value(float v) { this->value_ = v; }
+  void play(Ts... /*x*/) override { this->parent_->set_component_value(this->component_name_, this->value_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  std::function<float(Ts...)> value_func_;
+  float value_{0};
 };
 
 template<typename... Ts>
 class SetComponentTextAction : public Action<Ts...> {
  public:
-  SetComponentTextAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentTextAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
-  void set_value(std::function<std::string(Ts...)> fn) { this->value_func_ = fn; }
-  void play(Ts... x) override {
-    std::string txt = this->value_func_(x...);
-    this->parent_->set_component_text(this->component_name_, txt);
-  }
+  void set_text(const std::string &t) { this->text_ = t; }
+  void play(Ts... /*x*/) override { this->parent_->set_component_text(this->component_name_, this->text_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  std::function<std::string(Ts...)> value_func_;
+  std::string text_;
+};
+
+template<typename... Ts>
+class SetComponentTextPrintfAction : public Action<Ts...> {
+ public:
+  explicit SetComponentTextPrintfAction(NextionSimple *parent) : parent_(parent) {}
+  void set_component_name(const std::string &nm) { this->component_name_ = nm; }
+  void set_format(const char *f) { this->format_ = f; }
+  void play(Ts... /*x*/) override { this->parent_->set_component_text_printf(this->component_name_, this->format_); }
+ protected:
+  NextionSimple *parent_;
+  std::string component_name_;
+  const char *format_{nullptr};
 };
 
 template<typename... Ts>
 class SetComponentPiccAction : public Action<Ts...> {
  public:
-  SetComponentPiccAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentPiccAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_value(int v) { this->value_ = v; }
-  void play(Ts... x) override {
-    this->parent_->set_component_picc(this->component_name_, this->value_);
-  }
+  void play(Ts... /*x*/) override { this->parent_->set_component_picc(this->component_name_, this->value_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  int value_;
+  int value_{0};
 };
 
 template<typename... Ts>
 class SetComponentPicc1Action : public Action<Ts...> {
  public:
-  SetComponentPicc1Action(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentPicc1Action(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_value(int v) { this->value_ = v; }
-  void play(Ts... x) override {
-    this->parent_->set_component_picc1(this->component_name_, this->value_);
-  }
+  void play(Ts... /*x*/) override { this->parent_->set_component_picc1(this->component_name_, this->value_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  int value_;
+  int value_{0};
 };
 
 template<typename... Ts>
 class SetComponentBackgroundColorAction : public Action<Ts...> {
  public:
-  SetComponentBackgroundColorAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentBackgroundColorAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_color(int c) { this->color_ = c; }
-  void play(Ts... x) override {
-    this->parent_->set_component_background_color(this->component_name_, this->color_);
-  }
+  void play(Ts... /*x*/) override { this->parent_->set_component_background_color(this->component_name_, this->color_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  int color_;
-};
-
-template<typename... Ts>
-class SetComponentBackgroundColorRGBAction : public Action<Ts...> {
- public:
-  SetComponentBackgroundColorRGBAction(NextionSimple *parent) : parent_(parent) {}
-  void set_component_name(const std::string &nm) { this->component_name_ = nm; }
-  void set_color(Color c) { this->color_ = c; }
-  void play(Ts... x) override {
-    this->parent_->set_component_background_color(this->component_name_, this->color_);
-  }
- protected:
-  NextionSimple *parent_;
-  std::string component_name_;
-  Color color_;
+  int color_{0};
 };
 
 template<typename... Ts>
 class SetComponentFontColorAction : public Action<Ts...> {
  public:
-  SetComponentFontColorAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentFontColorAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_color(int c) { this->color_ = c; }
-  void play(Ts... x) override {
-    this->parent_->set_component_font_color(this->component_name_, this->color_);
-  }
+  void play(Ts... /*x*/) override { this->parent_->set_component_font_color(this->component_name_, this->color_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  int color_;
+  int color_{0};
 };
 
 template<typename... Ts>
-class SetComponentFontColorRGBAction : public Action<Ts...> {
+class SetComponentVisibilityAction : public Action<Ts...> {
  public:
-  SetComponentFontColorRGBAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetComponentVisibilityAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
-  void set_color(Color c) { this->color_ = c; }
-  void play(Ts... x) override {
-    this->parent_->set_component_font_color(this->component_name_, this->color_);
-  }
+  void set_state(bool s) { this->state_ = s ? 1 : 0; }
+  void play(Ts... /*x*/) override { this->parent_->set_component_visibility(this->component_name_, this->state_); }
  protected:
   NextionSimple *parent_;
   std::string component_name_;
-  Color color_;
+  int state_{1};
 };
 
 template<typename... Ts>
 class SetPageAction : public Action<Ts...> {
  public:
-  SetPageAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetPageAction(NextionSimple *parent) : parent_(parent) {}
   void set_page(int p) { this->page_ = p; }
-  void play(Ts... x) override {
-    this->parent_->set_page(this->page_);
-  }
+  void play(Ts... /*x*/) override { this->parent_->set_page(this->page_); }
  protected:
   NextionSimple *parent_;
-  int page_;
+  int page_{0};
 };
 
-template<typename... Ts>
-class UploadTftAction : public Action<Ts...> {
- public:
-  UploadTftAction(NextionSimple *parent) : parent_(parent) {}
-  void play(Ts... x) override {
-    this->parent_->upload_tft();
-  }
- protected:
-  NextionSimple *parent_;
-};
+// ===================== Triggers =====================
 
 class NextionSetupTrigger : public Trigger<> {
  public:
-  explicit NextionSetupTrigger(NextionSimple *parent) {
-    parent->add_on_setup_callback([this]() { this->trigger(); });
-  }
+  explicit NextionSetupTrigger(NextionSimple *parent) { parent->add_on_setup_callback([this]() { this->trigger(); }); }
 };
 
 class NextionPageTrigger : public Trigger<int> {
  public:
-  explicit NextionPageTrigger(NextionSimple *parent) {
-    parent->add_on_page_callback([this](int page) { this->trigger(page); });
-  }
+  explicit NextionPageTrigger(NextionSimple *parent) { parent->add_on_page_callback([this](int page) { this->trigger(page); }); }
 };
 
 class NextionReadyTrigger : public Trigger<> {
  public:
-  explicit NextionReadyTrigger(NextionSimple *parent) {
-    parent->add_on_nextion_ready_callback([this]() { this->trigger(); });
-  }
+  explicit NextionReadyTrigger(NextionSimple *parent) { parent->add_on_nextion_ready_callback([this]() { this->trigger(); }); }
 };
 
 }  // namespace nextion_simple

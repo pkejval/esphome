@@ -1,8 +1,6 @@
 #include "nextion_simple.h"
 #include "esphome/core/log.h"
 #include "esphome/core/util.h"
-#include <cstdarg>
-#include <cstring>
 
 namespace esphome {
 namespace nextion_simple {
@@ -11,94 +9,177 @@ const char *NextionSimple::TAG = "nextion_simple";
 
 NextionSimple::NextionSimple() {}
 
+void NextionSimple::dump_config() {
+  ESP_LOGCONFIG(TAG, "Nextion Simple:");
+  ESP_LOGCONFIG(TAG, "  TFT URL: %s", this->tft_url_.c_str());
+}
+
 void NextionSimple::setup() {
   ESP_LOGCONFIG(TAG, "Initializing Nextion Simple...");
   if (this->uart_parent_ == nullptr) {
     ESP_LOGE(TAG, "UART parent not set!");
-    this->mark_failed();
+    mark_failed();
     return;
   }
+
+  this->start_init_handshake_();
   this->on_setup_callback_.call();
 }
 
 void NextionSimple::loop() {
-  if (this->upload_in_progress_) {
-    return;
-  }
-  size_t available = this->uart_parent_->available();
-  if (available == 0) {
-    return;
-  }
-  size_t space_left = BUFFER_SIZE - this->buffer_index_;
-  if (space_left == 0) {
-    static constexpr size_t KEEP = 20;
-    if (BUFFER_SIZE > KEEP) {
-      memmove(this->rx_buffer_, this->rx_buffer_ + (BUFFER_SIZE - KEEP), KEEP);
-      this->buffer_index_ = KEEP;
+  if (this->upload_in_progress_ || this->uart_parent_ == nullptr) return;
+
+  switch (this->mode_) {
+    case NxMode::INIT: {
+      this->drain_uart_into_ring_();
+      this->parse_from_ring_init_only_();
+
+      if (this->handshake_done_) {
+        this->enter_writeonly_mode_();
+      } else if (millis() >= this->init_deadline_ms_) {
+        ESP_LOGW(TAG, "Init handshake timeout, proceeding to write-only.");
+        this->enter_writeonly_mode_();
+      }
+      break;
     }
-    space_left = BUFFER_SIZE - this->buffer_index_;
+    case NxMode::RUN_WRITEONLY:
+      // nic – write-only režim
+      break;
+
+    case NxMode::DIAG_CHECK:
+      this->diagnostic_tick_();
+      break;
   }
-  size_t to_read = (available < space_left) ? available : space_left;
-  size_t read_bytes = this->uart_parent_->read_array(this->rx_buffer_ + this->buffer_index_, to_read);
-  this->buffer_index_ += read_bytes;
-  size_t pos = 0;
-  while (pos + 2 < this->buffer_index_) {
-    if (this->rx_buffer_[pos] == 0xFF &&
-        this->rx_buffer_[pos + 1] == 0xFF &&
-        this->rx_buffer_[pos + 2] == 0xFF) {
-      if (pos > 0) {
-        this->process_command(this->rx_buffer_, pos);
-      }
-      size_t new_start = pos + 3;
-      size_t remain = this->buffer_index_ - new_start;
-      if (remain > 0) {
-        memmove(this->rx_buffer_, this->rx_buffer_ + new_start, remain);
-      }
-      this->buffer_index_ = remain;
-      pos = 0;
+}
+
+// ====== INIT / MODE mgmt ======
+
+void NextionSimple::start_init_handshake_() {
+  this->mode_ = NxMode::INIT;
+  this->rx_enabled_ = true;
+  this->handshake_done_ = false;
+  this->saw_expected_reply_ = false;
+  this->rb_head_ = this->rb_tail_ = 0;
+  this->init_deadline_ms_ = millis() + 3000;
+
+  if (bkcmd_ != 3) { this->send_command_cstr("bkcmd=3"); bkcmd_ = 3; }
+  this->send_command_cstr("sendme");
+}
+
+void NextionSimple::enter_writeonly_mode_() {
+  if (bkcmd_ != 0) { this->send_command_cstr("bkcmd=0"); bkcmd_ = 0; }
+  this->rx_enabled_ = false;
+  this->rb_head_ = this->rb_tail_ = 0;
+  this->mode_ = NxMode::RUN_WRITEONLY;
+
+  uint32_t now = millis();
+  if (now - this->last_ready_ms_ >= this->nextion_ready_cooldown_) {
+    this->last_ready_ms_ = now;
+    this->on_nextion_ready_callback_.call();
+  }
+}
+
+void NextionSimple::request_health_check_() {
+  if (this->mode_ != NxMode::RUN_WRITEONLY) return;
+  this->send_command_cstr("bkcmd=1"); bkcmd_ = 1;
+  this->rx_enabled_ = true;
+  this->saw_expected_reply_ = false;
+  this->rb_head_ = this->rb_tail_ = 0;
+  this->diag_deadline_ms_ = millis() + 100;
+  this->mode_ = NxMode::DIAG_CHECK;
+  this->send_command_cstr("get dim");
+}
+
+void NextionSimple::diagnostic_tick_() {
+  if (!rx_enabled_) { this->mode_ = NxMode::RUN_WRITEONLY; return; }
+  this->drain_uart_into_ring_();
+
+  uint8_t b, frame[64];
+  size_t flen = 0, ffterm = 0;
+  bool in_frame = false;
+
+  while (this->rb_pop_(b)) {
+    if (!in_frame) {
+      if (b == 0x70 || b == 0x71) { in_frame = true; frame[0] = b; flen = 1; ffterm = 0; }
     } else {
-      pos++;
+      if (flen < sizeof(frame)) frame[flen++] = b;
+      if (b == 0xFF) { if (++ffterm == 3) { this->saw_expected_reply_ = true; break; } }
+      else ffterm = 0;
+    }
+  }
+
+  if (this->saw_expected_reply_ || millis() >= this->diag_deadline_ms_) {
+    this->send_command_cstr("bkcmd=0"); bkcmd_ = 0;
+    this->rx_enabled_ = false;
+    this->rb_head_ = this->rb_tail_ = 0;
+    this->mode_ = NxMode::RUN_WRITEONLY;
+  }
+}
+
+// ====== INIT-only RX ======
+
+void NextionSimple::drain_uart_into_ring_() {
+  if (!rx_enabled_) return;
+  size_t avail = this->uart_parent_->available();
+  while (avail--) {
+    uint8_t b;
+    if (!this->uart_parent_->read_byte(&b)) break;
+    this->rb_push_(b);
+  }
+}
+
+void NextionSimple::parse_from_ring_init_only_() {
+  uint8_t b;
+  uint8_t frame[64];
+  size_t flen = 0, ffterm = 0;
+  bool in_frame = false;
+
+  while (this->rb_pop_(b)) {
+    if (!in_frame) {
+      if (b == 0x66 || b == 0x88 || b == 0x00) {
+        in_frame = true; frame[0] = b; flen = 1; ffterm = 0;
+      }
+    } else {
+      if (flen < sizeof(frame)) frame[flen++] = b;
+      if (b == 0xFF) {
+        if (++ffterm == 3) {
+          handle_frame_init_only_(frame, flen - 3);
+          in_frame = false; flen = 0; ffterm = 0;
+          if (this->handshake_done_) return;
+        }
+      } else {
+        ffterm = 0;
+      }
     }
   }
 }
 
-void NextionSimple::process_command(const uint8_t* data, size_t length) {
-  if (length == 0) {
-    return;
-  }
-  uint8_t cmd_code = data[0];
-  switch (cmd_code) {
-    case 0x66:
-      if (length >= 2) {
-        int page = data[1];
-        this->current_page_ = page;
-        ESP_LOGD(TAG, "Current page: %d", page);
-        this->on_page_callback_.call(page);
-      } else {
-        ESP_LOGW(TAG, "Page data too short");
+void NextionSimple::handle_frame_init_only_(const uint8_t *frame, size_t len) {
+  if (len == 0) return;
+  uint8_t code = frame[0];
+
+  switch (code) {
+    case 0x66: { // sendme response: 0x66, page_id
+      if (len >= 2) {
+        this->current_page_ = static_cast<int>(frame[1]);
+        this->on_page_callback_.call(this->current_page_);
       }
+      this->handshake_done_ = true;
       break;
-    case 0x88: {
-      uint32_t now = millis();
-      if (now - this->last_nextion_ready_time_ >= this->nextion_ready_cooldown_) {
-        this->last_nextion_ready_time_ = now;
-        ESP_LOGD(TAG, "Nextion ready, triggering callback");
-        this->on_nextion_ready_callback_.call();
-      } else {
-        ESP_LOGV(TAG, "Nextion ready (throttled)");
-      }
+    }
+    case 0x88: { // OK
+      break;
+    }
+    case 0x00: {
+      ESP_LOGW(TAG, "Nextion returned invalid instruction during INIT");
       break;
     }
     default:
-      ESP_LOGD(TAG, "Unknown Nextion command: 0x%02X", cmd_code);
       break;
   }
 }
 
-void NextionSimple::dump_config() {
-  ESP_LOGCONFIG(TAG, "Nextion Simple config:");
-  ESP_LOGCONFIG(TAG, "  TFT URL: %s", this->tft_url_.c_str());
-}
+// ====== High-level API ======
 
 void NextionSimple::set_component_value(const std::string &component_name, float value) {
   int iv = static_cast<int>(value);
@@ -110,7 +191,7 @@ void NextionSimple::set_component_text(const std::string &component_name, const 
     this->send_command_cstr("%s.txt=\"%s\"", component_name.c_str(), text.c_str());
   } else {
     std::string result;
-    result.reserve(text.size() + args.size() * 10);
+    result.reserve(text.size() + args.size()*8);
     size_t last = 0;
     for (const auto &arg : args) {
       size_t pos = text.find("%s", last);
@@ -125,16 +206,15 @@ void NextionSimple::set_component_text(const std::string &component_name, const 
 }
 
 void NextionSimple::set_component_text_printf(const std::string &component_name, const char *format, ...) {
-  char buf[128];
-  va_list args;
-  va_start(args, format);
-  int n = vsnprintf(buf, sizeof(buf), format, args);
-  va_end(args);
-  if (n < 0 || static_cast<size_t>(n) >= sizeof(buf)) {
-    ESP_LOGE(TAG, "Error formatting text");
-    return;
-  }
-  this->set_component_text(component_name, buf);
+  static char text[160];
+  static char cmd[224];
+  va_list ap; va_start(ap, format);
+  int tn = vsnprintf(text, sizeof(text), format, ap);
+  va_end(ap);
+  if (tn <= 0) return;
+  int cn = snprintf(cmd, sizeof(cmd), "%s.txt=\"%s\"", component_name.c_str(), text);
+  if (cn <= 0) return;
+  this->send_command(cmd, static_cast<size_t>(cn));
 }
 
 void NextionSimple::set_component_picc(const std::string &component_name, int value) {
@@ -142,7 +222,7 @@ void NextionSimple::set_component_picc(const std::string &component_name, int va
 }
 
 void NextionSimple::set_component_picc1(const std::string &component_name, int value) {
-  this->send_command_cstr("%s.picc1=%d", component_name.c_str(), value);
+  this->send_command_cstr("%s.picc2=%d", component_name.c_str(), value);
 }
 
 void NextionSimple::set_component_background_color(const std::string &component_name, int color) {
@@ -150,8 +230,7 @@ void NextionSimple::set_component_background_color(const std::string &component_
 }
 
 void NextionSimple::set_component_background_color(const std::string &component_name, Color color) {
-  int col = this->color_to_integer_(color);
-  this->send_command_cstr("%s.bco=%d", component_name.c_str(), col);
+  this->set_component_background_color(component_name, this->color_to_integer_(color));
 }
 
 void NextionSimple::set_component_font_color(const std::string &component_name, int color) {
@@ -159,54 +238,68 @@ void NextionSimple::set_component_font_color(const std::string &component_name, 
 }
 
 void NextionSimple::set_component_font_color(const std::string &component_name, Color color) {
-  int col = this->color_to_integer_(color);
-  this->send_command_cstr("%s.pco=%d", component_name.c_str(), col);
+  this->set_component_font_color(component_name, this->color_to_integer_(color));
 }
 
 void NextionSimple::set_component_visibility(const std::string &component_name, bool state) {
-  this->set_component_visibility(component_name, (int)state);
+  this->set_component_visibility(component_name, state ? 1 : 0);
 }
 
 void NextionSimple::set_component_visibility(const std::string &component_name, int state) {
-  this->send_command_cstr("%s.vis=%d", component_name.c_str(), state);
+  this->send_command_cstr("vis %s,%d", component_name.c_str(), state);
 }
 
 void NextionSimple::set_page(int page) {
+  if (page < 0) return;
   this->send_command_cstr("page %d", page);
+  this->current_page_ = page;
+  this->on_page_callback_.call(page);
 }
 
-void NextionSimple::goto_page(int page) {
-  this->set_page(page);
+void NextionSimple::goto_page(int page) { this->set_page(page); }
+
+// ====== Low-level send ======
+
+void NextionSimple::send_command_cstr(const char *fmt, ...) {
+  if (this->upload_in_progress_ || this->uart_parent_ == nullptr) return;
+  static char buf[kMaxCmd + 3];
+  va_list ap; va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf) - 3, fmt, ap);
+  va_end(ap);
+  if (n <= 0) return;
+  size_t len = (size_t) (n > (int)sizeof(buf)-3 ? sizeof(buf)-3 : n);
+  buf[len] = 0xFF; buf[len+1] = 0xFF; buf[len+2] = 0xFF;
+  this->uart_parent_->write_array(reinterpret_cast<const uint8_t*>(buf), len + 3);
 }
+
+// ====== Maintenance ======
 
 void NextionSimple::reset_nextion() {
-  ESP_LOGI(TAG, "Reset Nextion...");
-  const char reset_cmd[] = "rest";
-  this->send_command(reset_cmd, sizeof(reset_cmd) - 1);
-#ifdef USE_ESP_IDF
-  vTaskDelay(pdMS_TO_TICKS(1000));
-#else
-  delay(1000);
-#endif
-  ESP_LOGI(TAG, "Nextion reset complete");
+  this->send_command_cstr("rest");
 }
 
 void NextionSimple::upload_tft() {
+  if (this->tft_url_.empty()) {
+    ESP_LOGW(TAG, "TFT URL not configured; skipping upload");
+    return;
+  }
+  if (this->upload_in_progress_) return;
+
   this->upload_in_progress_ = true;
-#ifdef USE_ARDUINO
-  this->upload_tft_arduino_();
-#elif defined(USE_ESP_IDF)
-  this->upload_tft_esp_idf_();
+#if defined(USE_ESP_IDF)
+  (void)this->upload_tft_esp_idf_();
+#else
+  (void)this->upload_tft_arduino_(); // not implemented here
 #endif
 }
 
 uint32_t NextionSimple::get_free_heap_() {
 #if defined(USE_ESP32)
-#ifdef USE_ESP_IDF
-  return esp_get_free_heap_size();
-#else
-  return ESP.getHeapSize();
-#endif
+  #ifdef USE_ESP_IDF
+    return esp_get_free_heap_size();
+  #else
+    return ESP.getFreeHeap();
+  #endif
 #elif defined(USE_ESP8266)
   return ESP.getFreeHeap();
 #else
