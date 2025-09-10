@@ -8,6 +8,7 @@ DEPENDENCIES = ["uart"]
 
 nextion_simple_ns = cg.esphome_ns.namespace("nextion_simple")
 NextionSimple = nextion_simple_ns.class_("NextionSimple", cg.Component)
+
 NextionSetupTrigger = nextion_simple_ns.class_("NextionSetupTrigger", automation.Trigger.template())
 NextionPageTrigger = nextion_simple_ns.class_("NextionPageTrigger", automation.Trigger.template())
 NextionReadyTrigger = nextion_simple_ns.class_("NextionReadyTrigger", automation.Trigger.template())
@@ -23,20 +24,18 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
     cv.Optional(CONF_TFT_URL): cv.string,
 
-    # on_setup nemá parametry → jde to přímo přes callback registrátor
-    cv.Optional(CONF_ON_SETUP): automation.validate_automation(single=True),
-
-    # on_page má parametr (int page) → definuj trigger_id
+    # Všechny eventy sjednotíme na Triggery (žádné přímé member-func volání)
+    cv.Optional(CONF_ON_SETUP): automation.validate_automation({
+        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionSetupTrigger),
+    }),
     cv.Optional(CONF_ON_PAGE): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionPageTrigger),
     }),
-
-    # on_nextion_ready bez parametrů → taky trigger s id
     cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation({
         cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionReadyTrigger),
     }),
 
-    # POZOR: default musí mít jednotku
+    # POZOR: default s jednotkou
     cv.Optional(CONF_NEXTION_READY_COOLDOWN, default="500ms"): cv.positive_time_period_milliseconds,
 })
 
@@ -53,17 +52,19 @@ async def to_code(config):
     if CONF_NEXTION_READY_COOLDOWN in config:
         cg.add(var.set_nextion_ready_cooldown(int(config[CONF_NEXTION_READY_COOLDOWN].total_milliseconds)))
 
-    # on_setup – přímo přes registrátor
+    # on_setup
     if CONF_ON_SETUP in config:
-        await automation.build_automation(var.add_on_setup_callback, [], config[CONF_ON_SETUP])
+        for conf in config[CONF_ON_SETUP]:
+            trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+            await automation.build_automation(trig, [], conf)
 
-    # on_page – vytvoř Trigger instanci s daným ID a parentem var
+    # on_page (předává int page)
     if CONF_ON_PAGE in config:
         for conf in config[CONF_ON_PAGE]:
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trig, [(cg.int_, "page")], conf)
 
-    # on_nextion_ready – bez parametrů, ale stejně Trigger s ID
+    # on_nextion_ready (bez parametrů)
     if CONF_ON_NEXTION_READY in config:
         for conf in config[CONF_ON_NEXTION_READY]:
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
