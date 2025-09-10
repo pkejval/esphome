@@ -24,7 +24,7 @@ void GLR01I2CComponent::setup() {
 }
 
 void GLR01I2CComponent::dump_config() {
-  LOG_SENSOR(TAG, "Gauselink GL-R01 (I2C) Distance");
+  LOG_SENSOR(TAG, "Gauselink GL-R01 (I2C) Distance", this);
   LOG_I2C_DEVICE(this);
   ESP_LOGI(TAG, "FW version: 0x%04X", this->version_);
   ESP_LOGI(TAG, "Trigger delay: %u ms, restart after %u failures",
