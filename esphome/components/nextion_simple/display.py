@@ -31,7 +31,7 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_ON_SETUP): automation.validate_automation(single=True),
     cv.Optional(CONF_ON_PAGE): automation.validate_automation(single=True),
     cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation(single=True),
-    cv.Optional(CONF_NEXTION_READY_COOLDOWN, default=500): cv.positive_time_period_milliseconds,
+    cv.Optional(CONF_NEXTION_READY_COOLDOWN, default="500ms"): cv.positive_time_period_milliseconds,
 })
 
 async def to_code(config):
