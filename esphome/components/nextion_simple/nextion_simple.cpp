@@ -62,12 +62,12 @@ void NextionSimple::start_init_handshake_() {
   this->rb_head_ = this->rb_tail_ = 0;
   this->init_deadline_ms_ = millis() + 3000;
 
-  if (bkcmd_ != 3) { this->send_command_cstr("bkcmd=3"); bkcmd_ = 3; }
-  this->send_command_cstr("sendme");
+  if (bkcmd_ != 3) { this->send_command_printf("bkcmd=3"); bkcmd_ = 3; }
+  this->send_command_printf("sendme");
 }
 
 void NextionSimple::enter_writeonly_mode_() {
-  if (bkcmd_ != 0) { this->send_command_cstr("bkcmd=0"); bkcmd_ = 0; }
+  if (bkcmd_ != 0) { this->send_command_printf("bkcmd=0"); bkcmd_ = 0; }
   this->rx_enabled_ = false;
   this->rb_head_ = this->rb_tail_ = 0;
   this->mode_ = NxMode::RUN_WRITEONLY;
@@ -81,13 +81,13 @@ void NextionSimple::enter_writeonly_mode_() {
 
 void NextionSimple::request_health_check_() {
   if (this->mode_ != NxMode::RUN_WRITEONLY) return;
-  this->send_command_cstr("bkcmd=1"); bkcmd_ = 1;
+  this->send_command_printf("bkcmd=1"); bkcmd_ = 1;
   this->rx_enabled_ = true;
   this->saw_expected_reply_ = false;
   this->rb_head_ = this->rb_tail_ = 0;
   this->diag_deadline_ms_ = millis() + 100;
   this->mode_ = NxMode::DIAG_CHECK;
-  this->send_command_cstr("get dim");
+  this->send_command_printf("get dim");
 }
 
 void NextionSimple::diagnostic_tick_() {
@@ -109,7 +109,7 @@ void NextionSimple::diagnostic_tick_() {
   }
 
   if (this->saw_expected_reply_ || millis() >= this->diag_deadline_ms_) {
-    this->send_command_cstr("bkcmd=0"); bkcmd_ = 0;
+    this->send_command_printf("bkcmd=0"); bkcmd_ = 0;
     this->rx_enabled_ = false;
     this->rb_head_ = this->rb_tail_ = 0;
     this->mode_ = NxMode::RUN_WRITEONLY;
@@ -183,12 +183,12 @@ void NextionSimple::handle_frame_init_only_(const uint8_t *frame, size_t len) {
 
 void NextionSimple::set_component_value(const std::string &component_name, float value) {
   int iv = static_cast<int>(value);
-  this->send_command_cstr("%s.val=%d", component_name.c_str(), iv);
+  this->send_command_printf("%s.val=%d", component_name.c_str(), iv);
 }
 
 void NextionSimple::set_component_text(const std::string &component_name, const std::string &text, const std::vector<std::string> &args) {
   if (args.empty()) {
-    this->send_command_cstr("%s.txt=\"%s\"", component_name.c_str(), text.c_str());
+    this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), text.c_str());
   } else {
     std::string result;
     result.reserve(text.size() + args.size()*8);
@@ -201,7 +201,7 @@ void NextionSimple::set_component_text(const std::string &component_name, const 
       last = pos + 2;
     }
     result.append(text.data() + last, text.size() - last);
-    this->send_command_cstr("%s.txt=\"%s\"", component_name.c_str(), result.c_str());
+    this->send_command_printf("%s.txt=\"%s\"", component_name.c_str(), result.c_str());
   }
 }
 
@@ -218,15 +218,15 @@ void NextionSimple::set_component_text_printf(const std::string &component_name,
 }
 
 void NextionSimple::set_component_picc(const std::string &component_name, int value) {
-  this->send_command_cstr("%s.picc=%d", component_name.c_str(), value);
+  this->send_command_printf("%s.picc=%d", component_name.c_str(), value);
 }
 
 void NextionSimple::set_component_picc1(const std::string &component_name, int value) {
-  this->send_command_cstr("%s.picc1=%d", component_name.c_str(), value);
+  this->send_command_printf("%s.picc1=%d", component_name.c_str(), value);
 }
 
 void NextionSimple::set_component_background_color(const std::string &component_name, int color) {
-  this->send_command_cstr("%s.bco=%d", component_name.c_str(), color);
+  this->send_command_printf("%s.bco=%d", component_name.c_str(), color);
 }
 
 void NextionSimple::set_component_background_color(const std::string &component_name, Color color) {
@@ -234,7 +234,7 @@ void NextionSimple::set_component_background_color(const std::string &component_
 }
 
 void NextionSimple::set_component_font_color(const std::string &component_name, int color) {
-  this->send_command_cstr("%s.pco=%d", component_name.c_str(), color);
+  this->send_command_printf("%s.pco=%d", component_name.c_str(), color);
 }
 
 void NextionSimple::set_component_font_color(const std::string &component_name, Color color) {
@@ -246,12 +246,12 @@ void NextionSimple::set_component_visibility(const std::string &component_name, 
 }
 
 void NextionSimple::set_component_visibility(const std::string &component_name, int state) {
-  this->send_command_cstr("vis %s,%d", component_name.c_str(), state);
+  this->send_command_printf("vis %s,%d", component_name.c_str(), state);
 }
 
 void NextionSimple::set_page(int page) {
   if (page < 0) return;
-  this->send_command_cstr("page %d", page);
+  this->send_command_printf("page %d", page);
   this->current_page_ = page;
   this->on_page_callback_.call(page);
 }
@@ -260,7 +260,7 @@ void NextionSimple::goto_page(int page) { this->set_page(page); }
 
 // ====== Low-level send ======
 
-void NextionSimple::send_command_cstr(const char *fmt, ...) {
+void NextionSimple::send_command_printf(const char *fmt, ...) {
   if (this->upload_in_progress_ || this->uart_parent_ == nullptr) return;
   static char buf[kMaxCmd + 3];
   va_list ap; va_start(ap, fmt);
@@ -275,7 +275,7 @@ void NextionSimple::send_command_cstr(const char *fmt, ...) {
 // ====== Maintenance ======
 
 void NextionSimple::reset_nextion() {
-  this->send_command_cstr("rest");
+  this->send_command_printf("rest");
 }
 
 void NextionSimple::upload_tft() {

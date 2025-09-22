@@ -48,8 +48,8 @@ bool NextionSimple::wait_for_ack_idf_(uint32_t timeout_ms, std::string &out) {
 
 bool NextionSimple::prepare_nextion_for_upload_idf_(uint32_t baud_rate) {
   // Display nesmí spát
-  this->send_command_cstr("sleep=0");
-  this->send_command_cstr("dim=100");
+  this->send_command_printf("sleep=0");
+  this->send_command_printf("dim=100");
   delay(250);
 
   // Vyčisti RX
@@ -313,7 +313,7 @@ bool NextionSimple::upload_tft_esp_idf_() {
       this->is_updating_ = false;
       this->upload_in_progress_ = false;
       // runtime zpět do write-only
-      this->send_command_cstr("bkcmd=0"); this->bkcmd_ = 0;
+      this->send_command_printf("bkcmd=0"); this->bkcmd_ = 0;
       this->enter_writeonly_mode_();
       return false;
     }
@@ -334,7 +334,7 @@ bool NextionSimple::upload_tft_esp_idf_() {
   }
 
   // Vypni odpovědi a vrať write-only
-  this->send_command_cstr("bkcmd=0"); this->bkcmd_ = 0;
+  this->send_command_printf("bkcmd=0"); this->bkcmd_ = 0;
   this->enter_writeonly_mode_();
 
   this->is_updating_ = false;

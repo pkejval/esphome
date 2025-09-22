@@ -53,7 +53,7 @@ class NextionSimple : public Component {
     buffer[len + 2] = static_cast<char>(0xFF);
     this->uart_parent_->write_array(reinterpret_cast<const uint8_t *>(buffer), len + 3);
   }
-  void send_command_cstr(const char *fmt, ...);
+  void send_command_printf(const char *fmt, ...);
 
   // Maintenance
   void reset_nextion();
