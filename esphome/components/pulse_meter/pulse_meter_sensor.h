@@ -9,7 +9,7 @@
 #include <atomic>
 
 namespace esphome {
-namespace pulse_meter_optimized {
+namespace pulse_meter {
 
 class PulseMeterSensor : public sensor::Sensor, public Component {
  public:
@@ -74,5 +74,5 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   void atomic_increment_pulses(uint32_t increment);
 };
 
-}  // namespace pulse_meter_optimized
+}  // namespace pulse_meter
 }  // namespace esphome

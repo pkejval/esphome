@@ -21,7 +21,7 @@ from esphome.core import CORE
 
 CODEOWNERS = ["@stevebaxter", "@cstaahl", "@TrentHouliston"]
 
-pulse_meter_ns = cg.esphome_ns.namespace("pulse_meter_optimized")
+pulse_meter_ns = cg.esphome_ns.namespace("pulse_meter")
 
 
 PulseMeterSensor = pulse_meter_ns.class_(
@@ -97,7 +97,7 @@ async def to_code(config):
 
 
 @automation.register_action(
-    "pulse_meter_optimized.set_total_pulses",
+    "pulse_meter.set_total_pulses",
     SetTotalPulsesAction,
     cv.Schema(
         {
