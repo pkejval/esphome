@@ -1,11 +1,11 @@
-#include "pulse_meter_sensor.h"
+#include "pulse_meter_optimized_sensor.h"
 #include "esphome/core/log.h"
 #include <inttypes.h>
 
 namespace esphome {
-namespace pulse_meter {
+namespace pulse_meter_optimized {
 
-static const char *const TAG = "pulse_meter";
+static const char *const TAG = "pulse_meter_optimized";
 
 void PulseMeterSensor::set_total_pulses(uint32_t pulses) {
   atomic_update_pulses(pulses);
@@ -146,5 +146,5 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   state.last_pin_val_ = pin_val;
 }
 
-}  // namespace pulse_meter
+}  // namespace pulse_meter_optimized
 }  // namespace esphome
