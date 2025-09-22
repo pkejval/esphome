@@ -222,7 +222,7 @@ void NextionSimple::set_component_picc(const std::string &component_name, int va
 }
 
 void NextionSimple::set_component_picc1(const std::string &component_name, int value) {
-  this->send_command_cstr("%s.picc2=%d", component_name.c_str(), value);
+  this->send_command_cstr("%s.picc1=%d", component_name.c_str(), value);
 }
 
 void NextionSimple::set_component_background_color(const std::string &component_name, int color) {
