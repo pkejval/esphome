@@ -676,7 +676,7 @@ async def heartbeat_filter_to_code(config, filter_id):
         else:
             min_v = config.get(CONF_MIN_VALUE)
             max_v = config.get(CONF_MAX_VALUE)
-            cg.add(var.set_range(cg.optional_(min_v), cg.optional_(max_v)))
+            cg.add(var.set_range(cg.optional(min_v), cg.optional(max_v)))
 
         return var
 
