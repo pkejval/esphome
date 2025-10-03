@@ -362,13 +362,24 @@ class HeartbeatFilter : public Filter, public Component {
   optional<float> new_value(float value) override;
   float get_setup_priority() const override;
 
-  void set_bypass(bool bypass) { this->bypass_ = bypass; }
+  void set_optimistic(bool optimistic) { this->optimistic_ = optimistic; }
+  void set_range(optional<float> min_v, optional<float> max_v) {
+    this->min_value_ = min_v;
+    this->max_value_ = max_v;
+  }
+  void set_exact(optional<float> exact_v) { this->exact_value_ = exact_v; }
 
  protected:
   uint32_t time_period_;
   float last_input_;
   bool has_value_{false};
-  bool bypass_{false};
+  bool optimistic_{false};
+
+  optional<float> min_value_;
+  optional<float> max_value_;
+  optional<float> exact_value_;
+
+  bool passes_periodic_conditions_(float v) const;
 };
 
 class DeltaFilter : public Filter {

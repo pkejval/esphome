@@ -443,12 +443,26 @@ float DebounceFilter::get_setup_priority() const { return setup_priority::HARDWA
 // HeartbeatFilter
 HeartbeatFilter::HeartbeatFilter(uint32_t time_period) : time_period_(time_period), last_input_(NAN) {}
 
+bool HeartbeatFilter::passes_periodic_conditions_(float v) const {
+  // Exact value has priority
+  if (this->exact_value_.has_value()) {
+    return v == *this->exact_value_;
+  }
+  // Otherwise interval (each edge is optional)
+  if (this->min_value_.has_value() && v < *this->min_value_)
+    return false;
+  if (this->max_value_.has_value() && v > *this->max_value_)
+    return false;
+  return true;
+}
+
 optional<float> HeartbeatFilter::new_value(float value) {
   ESP_LOGVV(TAG, "HeartbeatFilter(%p)::new_value(value=%f)", this, value);
   this->last_input_ = value;
   this->has_value_ = true;
 
-  if (this->bypass_) {
+  // Optimistic mode - send every new value immediately
+  if (this->optimistic_) {
     return value;
   }
   return {};
@@ -460,7 +474,10 @@ void HeartbeatFilter::setup() {
               this->last_input_);
     if (!this->has_value_)
       return;
-    this->output(this->last_input_);
+
+    if (this->passes_periodic_conditions_(this->last_input_)) {
+      this->output(this->last_input_);
+    }
   });
 }
 
