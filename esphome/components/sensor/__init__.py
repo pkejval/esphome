@@ -684,6 +684,7 @@ async def heartbeat_filter_to_code(config, filter_id):
     await cg.register_component(var, {})
     return var
 
+
 TIMEOUT_SCHEMA = cv.maybe_simple_value(
     {
         cv.Required(CONF_TIMEOUT): cv.positive_time_period_milliseconds,
@@ -693,6 +694,7 @@ TIMEOUT_SCHEMA = cv.maybe_simple_value(
     },
     key=CONF_TIMEOUT,
 )
+
 
 @FILTER_REGISTRY.register("timeout", TimeoutFilter, TIMEOUT_SCHEMA)
 async def timeout_filter_to_code(config, filter_id):
