@@ -359,15 +359,16 @@ class HeartbeatFilter : public Filter, public Component {
   explicit HeartbeatFilter(uint32_t time_period);
 
   void setup() override;
-
   optional<float> new_value(float value) override;
-
   float get_setup_priority() const override;
+
+  void set_bypass(bool bypass) { this->bypass_ = bypass; }
 
  protected:
   uint32_t time_period_;
   float last_input_;
   bool has_value_{false};
+  bool bypass_{false};
 };
 
 class DeltaFilter : public Filter {
