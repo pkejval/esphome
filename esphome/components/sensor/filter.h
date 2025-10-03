@@ -363,11 +363,14 @@ class HeartbeatFilter : public Filter, public Component {
   float get_setup_priority() const override;
 
   void set_optimistic(bool optimistic) { this->optimistic_ = optimistic; }
-  void set_range(optional<float> min_v, optional<float> max_v) {
-    this->min_value_ = min_v;
-    this->max_value_ = max_v;
-  }
-  void set_exact(optional<float> exact_v) { this->exact_value_ = exact_v; }
+
+  void set_exact(float v) { this->exact_value_ = v; }
+  void clear_exact() { this->exact_value_.reset(); }
+
+  void set_min_value(float v) { this->min_value_ = v; }
+  void set_max_value(float v) { this->max_value_ = v; }
+  void clear_min_value() { this->min_value_.reset(); }
+  void clear_max_value() { this->max_value_.reset(); }
 
  protected:
   uint32_t time_period_;
@@ -375,6 +378,7 @@ class HeartbeatFilter : public Filter, public Component {
   bool has_value_{false};
   bool optimistic_{false};
 
+  // Podmínky pouze pro periodické opakování
   optional<float> min_value_;
   optional<float> max_value_;
   optional<float> exact_value_;

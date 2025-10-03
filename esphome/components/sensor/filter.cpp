@@ -444,11 +444,9 @@ float DebounceFilter::get_setup_priority() const { return setup_priority::HARDWA
 HeartbeatFilter::HeartbeatFilter(uint32_t time_period) : time_period_(time_period), last_input_(NAN) {}
 
 bool HeartbeatFilter::passes_periodic_conditions_(float v) const {
-  // Exact value has priority
   if (this->exact_value_.has_value()) {
     return v == *this->exact_value_;
   }
-  // Otherwise interval (each edge is optional)
   if (this->min_value_.has_value() && v < *this->min_value_)
     return false;
   if (this->max_value_.has_value() && v > *this->max_value_)
@@ -461,7 +459,6 @@ optional<float> HeartbeatFilter::new_value(float value) {
   this->last_input_ = value;
   this->has_value_ = true;
 
-  // Optimistic mode - send every new value immediately
   if (this->optimistic_) {
     return value;
   }
