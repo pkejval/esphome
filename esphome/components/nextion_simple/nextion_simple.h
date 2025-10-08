@@ -28,7 +28,8 @@ class NextionSimple : public Component {
 
   // High-level API (hot paths bez alokací)
   void set_component_value(const std::string &component_name, float value);
-  void set_component_text(const std::string &component_name, const std::string &text, const std::vector<std::string> &args = {});
+  void set_component_text(const std::string &component_name, const std::string &text,
+                          const std::vector<std::string> &args = {});
   void set_component_text_printf(const std::string &component_name, const char *format, ...);
   void set_component_picc(const std::string &component_name, int value);
   void set_component_picc1(const std::string &component_name, int value);
@@ -44,11 +45,13 @@ class NextionSimple : public Component {
 
   // Low-level fast send: one buffered write + 0xFF 0xFF 0xFF
   inline void send_command(const char *cmd, size_t len) {
-    if (this->upload_in_progress_ || this->uart_parent_ == nullptr) return;
-    if (len > kMaxCmd) len = kMaxCmd;
+    if (this->upload_in_progress_ || this->uart_parent_ == nullptr)
+      return;
+    if (len > kMaxCmd)
+      len = kMaxCmd;
     char buffer[kMaxCmd + 3];
     memcpy(buffer, cmd, len);
-    buffer[len]     = static_cast<char>(0xFF);
+    buffer[len] = static_cast<char>(0xFF);
     buffer[len + 1] = static_cast<char>(0xFF);
     buffer[len + 2] = static_cast<char>(0xFF);
     this->uart_parent_->write_array(reinterpret_cast<const uint8_t *>(buffer), len + 3);
@@ -59,12 +62,14 @@ class NextionSimple : public Component {
   void reset_nextion();
   void upload_tft();
   bool is_uploading() const { return this->upload_in_progress_; }
-  int  get_current_page() const { return this->current_page_; }
+  int get_current_page() const { return this->current_page_; }
 
   // Callbacks
   void add_on_setup_callback(std::function<void()> &&callback) { this->on_setup_callback_.add(std::move(callback)); }
   void add_on_page_callback(std::function<void(int)> &&callback) { this->on_page_callback_.add(std::move(callback)); }
-  void add_on_nextion_ready_callback(std::function<void()> &&callback) { this->on_nextion_ready_callback_.add(std::move(callback)); }
+  void add_on_nextion_ready_callback(std::function<void()> &&callback) {
+    this->on_nextion_ready_callback_.add(std::move(callback));
+  }
 
   static const char *TAG;
 
@@ -76,7 +81,7 @@ class NextionSimple : public Component {
   // (ESP-IDF) helpers
   bool prepare_nextion_for_upload_idf_(uint32_t baud_rate);
   bool wait_for_ack_idf_(uint32_t timeout_ms, std::string &out);
-  int  upload_by_chunks_idf_(void *http_client, uint32_t &range_start); // forward decl (esp_http_client_handle_t*)
+  int upload_by_chunks_idf_(void *http_client, uint32_t &range_start);  // forward decl (esp_http_client_handle_t*)
 
   // ====== INIT-only RX parser ======
   void drain_uart_into_ring_();
@@ -106,27 +111,33 @@ class NextionSimple : public Component {
 
   // TX
   static constexpr size_t kMaxCmd = 256;
-  uint8_t bkcmd_{3}; // INIT chce odpovědi, runtime 0
+  uint8_t bkcmd_{3};  // INIT chce odpovědi, runtime 0
 
   // RX ring
-  static constexpr size_t RB_SIZE = 1024; // 2^N
+  static constexpr size_t RB_SIZE = 1024;  // 2^N
   uint8_t rx_rb_[RB_SIZE]{};
   size_t rb_head_{0};
   size_t rb_tail_{0};
   inline bool rb_push_(uint8_t b) {
     size_t nh = (rb_head_ + 1) & (RB_SIZE - 1);
-    if (nh == rb_tail_) return false;
-    rx_rb_[rb_head_] = b; rb_head_ = nh; return true;
+    if (nh == rb_tail_)
+      return false;
+    rx_rb_[rb_head_] = b;
+    rb_head_ = nh;
+    return true;
   }
   inline bool rb_pop_(uint8_t &b) {
-    if (rb_head_ == rb_tail_) return false;
-    b = rx_rb_[rb_tail_]; rb_tail_ = (rb_tail_ + 1) & (RB_SIZE - 1); return true;
+    if (rb_head_ == rb_tail_)
+      return false;
+    b = rx_rb_[rb_tail_];
+    rb_tail_ = (rb_tail_ + 1) & (RB_SIZE - 1);
+    return true;
   }
 
   // INIT parser state
   bool rx_enabled_{true};
   bool handshake_done_{false};
-  int  current_page_{-1};
+  int current_page_{-1};
   uint32_t init_deadline_ms_{0};
 
   // Optional diag
@@ -157,122 +168,133 @@ class NextionSimple : public Component {
 
 // ===================== Actions =====================
 
-template<typename... Ts>
-class SetComponentValueAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentValueAction : public Action<Ts...> {
  public:
   explicit SetComponentValueAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_value(float v) { this->value_ = v; }
   void play(Ts... /*x*/) override { this->parent_->set_component_value(this->component_name_, this->value_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   float value_{0};
 };
 
-template<typename... Ts>
-class SetComponentTextAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentTextAction : public Action<Ts...> {
  public:
   explicit SetComponentTextAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_text(const std::string &t) { this->text_ = t; }
   void play(Ts... /*x*/) override { this->parent_->set_component_text(this->component_name_, this->text_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   std::string text_;
 };
 
-template<typename... Ts>
-class SetComponentTextPrintfAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentTextPrintfAction : public Action<Ts...> {
  public:
   explicit SetComponentTextPrintfAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_format(const char *f) { this->format_ = f; }
   void play(Ts... /*x*/) override { this->parent_->set_component_text_printf(this->component_name_, this->format_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   const char *format_{nullptr};
 };
 
-template<typename... Ts>
-class SetComponentPiccAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentPiccAction : public Action<Ts...> {
  public:
   explicit SetComponentPiccAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_value(int v) { this->value_ = v; }
   void play(Ts... /*x*/) override { this->parent_->set_component_picc(this->component_name_, this->value_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   int value_{0};
 };
 
-template<typename... Ts>
-class SetComponentPicc1Action : public Action<Ts...> {
+template<typename... Ts> class SetComponentPicc1Action : public Action<Ts...> {
  public:
   explicit SetComponentPicc1Action(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_value(int v) { this->value_ = v; }
   void play(Ts... /*x*/) override { this->parent_->set_component_picc1(this->component_name_, this->value_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   int value_{0};
 };
 
-template<typename... Ts>
-class SetComponentBackgroundColorAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentBackgroundColorAction : public Action<Ts...> {
  public:
   explicit SetComponentBackgroundColorAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_color(int c) { this->color_ = c; }
-  void play(Ts... /*x*/) override { this->parent_->set_component_background_color(this->component_name_, this->color_); }
+  void play(Ts... /*x*/) override {
+    this->parent_->set_component_background_color(this->component_name_, this->color_);
+  }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   int color_{0};
 };
 
-template<typename... Ts>
-class SetComponentFontColorAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentFontColorAction : public Action<Ts...> {
  public:
   explicit SetComponentFontColorAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_color(int c) { this->color_ = c; }
   void play(Ts... /*x*/) override { this->parent_->set_component_font_color(this->component_name_, this->color_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   int color_{0};
 };
 
-template<typename... Ts>
-class SetComponentVisibilityAction : public Action<Ts...> {
+template<typename... Ts> class SetComponentVisibilityAction : public Action<Ts...> {
  public:
   explicit SetComponentVisibilityAction(NextionSimple *parent) : parent_(parent) {}
   void set_component_name(const std::string &nm) { this->component_name_ = nm; }
   void set_state(bool s) { this->state_ = s ? 1 : 0; }
   void play(Ts... /*x*/) override { this->parent_->set_component_visibility(this->component_name_, this->state_); }
+
  protected:
   NextionSimple *parent_;
   std::string component_name_;
   int state_{1};
 };
 
-template<typename... Ts>
-class SetPageAction : public Action<Ts...> {
+template<typename... Ts> class SetPageAction : public Action<Ts...> {
  public:
   explicit SetPageAction(NextionSimple *parent) : parent_(parent) {}
-  void set_page(int p) { this->is_name_ = false; this->page_ = p; }
-  void set_page_name(const std::string &n) { this->is_name_ = true; this->name_ = n; }
+
+  void set_page(int p) {
+    is_name_ = false;
+    page_ = p;
+  }
+  void set_page_name(const std::string &n) {
+    is_name_ = true;
+    name_ = n;
+  }
 
   void play(Ts... /*x*/) override {
-    if (this->is_name_) this->parent_->set_page(this->name_);
-    else                this->parent_->set_page(this->page_);
+    if (is_name_)
+      parent_->set_page(name_);
+    else
+      parent_->set_page(page_);
   }
- protected:
+
+ private:
   NextionSimple *parent_;
   int page_{0};
   std::string name_;
@@ -283,17 +305,23 @@ class SetPageAction : public Action<Ts...> {
 
 class NextionSetupTrigger : public Trigger<> {
  public:
-  explicit NextionSetupTrigger(NextionSimple *parent) { parent->add_on_setup_callback([this]() { this->trigger(); }); }
+  explicit NextionSetupTrigger(NextionSimple *parent) {
+    parent->add_on_setup_callback([this]() { this->trigger(); });
+  }
 };
 
 class NextionPageTrigger : public Trigger<int> {
  public:
-  explicit NextionPageTrigger(NextionSimple *parent) { parent->add_on_page_callback([this](int page) { this->trigger(page); }); }
+  explicit NextionPageTrigger(NextionSimple *parent) {
+    parent->add_on_page_callback([this](int page) { this->trigger(page); });
+  }
 };
 
 class NextionReadyTrigger : public Trigger<> {
  public:
-  explicit NextionReadyTrigger(NextionSimple *parent) { parent->add_on_nextion_ready_callback([this]() { this->trigger(); }); }
+  explicit NextionReadyTrigger(NextionSimple *parent) {
+    parent->add_on_nextion_ready_callback([this]() { this->trigger(); });
+  }
 };
 
 }  // namespace nextion_simple

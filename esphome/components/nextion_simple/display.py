@@ -6,31 +6,41 @@ from esphome.const import CONF_ID, CONF_UART_ID, CONF_TRIGGER_ID
 
 DEPENDENCIES = ["uart"]
 
-# Namespace držíme podle C++ (nextion_simple)
 ns = cg.esphome_ns.namespace("nextion_simple")
 NextionSimple = ns.class_("NextionSimple", cg.Component)
 
-# Triggery
 NextionSetupTrigger = ns.class_("NextionSetupTrigger", automation.Trigger.template())
 NextionPageTrigger = ns.class_("NextionPageTrigger", automation.Trigger.template())
 NextionReadyTrigger = ns.class_("NextionReadyTrigger", automation.Trigger.template())
 
 # C++ Action třídy
-SetComponentValueAction = ns.class_("SetComponentValueAction", automation.Action.template())
-SetComponentTextAction = ns.class_("SetComponentTextAction", automation.Action.template())
-SetComponentPiccAction = ns.class_("SetComponentPiccAction", automation.Action.template())
-SetComponentPicc1Action = ns.class_("SetComponentPicc1Action", automation.Action.template())
-SetComponentBackgroundColorAction = ns.class_("SetComponentBackgroundColorAction", automation.Action.template())
-SetComponentFontColorAction = ns.class_("SetComponentFontColorAction", automation.Action.template())
-SetComponentVisibilityAction = ns.class_("SetComponentVisibilityAction", automation.Action.template())
+SetComponentValueAction = ns.class_(
+    "SetComponentValueAction", automation.Action.template()
+)
+SetComponentTextAction = ns.class_(
+    "SetComponentTextAction", automation.Action.template()
+)
+SetComponentPiccAction = ns.class_(
+    "SetComponentPiccAction", automation.Action.template()
+)
+SetComponentPicc1Action = ns.class_(
+    "SetComponentPicc1Action", automation.Action.template()
+)
+SetComponentBackgroundColorAction = ns.class_(
+    "SetComponentBackgroundColorAction", automation.Action.template()
+)
+SetComponentFontColorAction = ns.class_(
+    "SetComponentFontColorAction", automation.Action.template()
+)
+SetComponentVisibilityAction = ns.class_(
+    "SetComponentVisibilityAction", automation.Action.template()
+)
 
-# Sjednocená stránkovací akce (v C++ musí existovat jediná SetPageAction s metodami set_page(int) a set_page_name(std::string))
+# Sjednocená stránkovací akce (musí existovat v C++ a mít set_page(int) + set_page_name(std::string))
 SetPageAction = ns.class_("SetPageAction", automation.Action.template())
 
-# Auto-target registr instancí
 _NEXTION_INSTANCES = []
 
-# Keys
 CONF_TFT_URL = "tft_url"
 CONF_ON_SETUP = "on_setup"
 CONF_ON_PAGE = "on_page"
@@ -44,24 +54,32 @@ CONF_TEXT = "text"
 CONF_COLOR = "color"
 CONF_STATE = "state"
 
-# ================= CONFIG =================
-CONFIG_SCHEMA = cv.Schema({
-    cv.GenerateID(): cv.declare_id(NextionSimple),
-    cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
-    cv.Optional(CONF_TFT_URL): cv.string,
-
-    cv.Optional(CONF_ON_SETUP): automation.validate_automation({
-        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionSetupTrigger),
-    }),
-    cv.Optional(CONF_ON_PAGE): automation.validate_automation({
-        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionPageTrigger),
-    }),
-    cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation({
-        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionReadyTrigger),
-    }),
-
-    cv.Optional(CONF_NEXTION_READY_COOLDOWN, default="500ms"): cv.positive_time_period_milliseconds,
-})
+# ============= CONFIG =============
+CONFIG_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(NextionSimple),
+        cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
+        cv.Optional(CONF_TFT_URL): cv.string,
+        cv.Optional(CONF_ON_SETUP): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionSetupTrigger),
+            }
+        ),
+        cv.Optional(CONF_ON_PAGE): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionPageTrigger),
+            }
+        ),
+        cv.Optional(CONF_ON_NEXTION_READY): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(NextionReadyTrigger),
+            }
+        ),
+        cv.Optional(
+            CONF_NEXTION_READY_COOLDOWN, default="500ms"
+        ): cv.positive_time_period_milliseconds,
+    }
+)
 
 
 async def to_code(config):
@@ -75,16 +93,22 @@ async def to_code(config):
     if CONF_TFT_URL in config:
         cg.add(var.set_tft_url(config[CONF_TFT_URL]))
     if CONF_NEXTION_READY_COOLDOWN in config:
-        cg.add(var.set_nextion_ready_cooldown(int(config[CONF_NEXTION_READY_COOLDOWN].total_milliseconds)))
+        cg.add(
+            var.set_nextion_ready_cooldown(
+                int(config[CONF_NEXTION_READY_COOLDOWN].total_milliseconds)
+            )
+        )
 
     if CONF_ON_SETUP in config:
         for conf in config[CONF_ON_SETUP]:
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trig, [], conf)
+
     if CONF_ON_PAGE in config:
         for conf in config[CONF_ON_PAGE]:
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trig, [(cg.int_, "page")], conf)
+
     if CONF_ON_NEXTION_READY in config:
         for conf in config[CONF_ON_NEXTION_READY]:
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
@@ -102,21 +126,24 @@ async def _get_parent_from_config(config):
 
 # =============== AKCE ===============
 
+
 # ---- nextion.set_page (int nebo string; shorthand; auto-target)
 @automation.register_action(
     "nextion.set_page",
-    # Důležité: registrujeme jako obecný Action<> => C++ proměnná bude Action<>*
+    # registrujeme jako obecný Action<>, ale v builderu vytvoříme konkrétní SetPageAction
     automation.Action.template(),
     cv.Any(
-        cv.templatable(cv.int_),    # shorthand: - nextion.set_page: 2
+        cv.templatable(cv.int_),  # shorthand: - nextion.set_page: 2
         cv.templatable(cv.string),  # shorthand: - nextion.set_page: "home"
-        cv.Schema({                 # plný tvar (s volitelným id)
-            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-            cv.Required(CONF_PAGE): cv.Any(
-                cv.templatable(cv.int_),
-                cv.templatable(cv.string),
-            ),
-        }),
+        cv.Schema(
+            {  # plný tvar (s volitelným id)
+                cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+                cv.Required(CONF_PAGE): cv.Any(
+                    cv.templatable(cv.int_),
+                    cv.templatable(cv.string),
+                ),
+            }
+        ),
     ),
 )
 async def nextion_set_page_to_code(config, action_id, template_args, args):
@@ -151,15 +178,16 @@ async def nextion_set_page_to_code(config, action_id, template_args, args):
     return var
 
 
-# ---- nextion.set_component_value ----
 @automation.register_action(
     "nextion.set_component_value",
     SetComponentValueAction,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_VALUE): cv.templatable(cv.float_),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_VALUE): cv.templatable(cv.float_),
+        }
+    ),
 )
 async def nextion_set_component_value_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
@@ -170,15 +198,16 @@ async def nextion_set_component_value_to_code(config, action_id, template_args, 
     return var
 
 
-# ---- nextion.set_component_text ----
 @automation.register_action(
     "nextion.set_component_text",
     SetComponentTextAction,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_TEXT): cv.templatable(cv.string),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_TEXT): cv.templatable(cv.string),
+        }
+    ),
 )
 async def nextion_set_component_text_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
@@ -189,15 +218,16 @@ async def nextion_set_component_text_to_code(config, action_id, template_args, a
     return var
 
 
-# ---- nextion.set_component_picc ----
 @automation.register_action(
     "nextion.set_component_picc",
     SetComponentPiccAction,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_VALUE): cv.templatable(cv.int_),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_VALUE): cv.templatable(cv.int_),
+        }
+    ),
 )
 async def nextion_set_component_picc_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
@@ -208,15 +238,16 @@ async def nextion_set_component_picc_to_code(config, action_id, template_args, a
     return var
 
 
-# ---- nextion.set_component_picc1 ----
 @automation.register_action(
     "nextion.set_component_picc1",
     SetComponentPicc1Action,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_VALUE): cv.templatable(cv.int_),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_VALUE): cv.templatable(cv.int_),
+        }
+    ),
 )
 async def nextion_set_component_picc1_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
@@ -227,15 +258,16 @@ async def nextion_set_component_picc1_to_code(config, action_id, template_args, 
     return var
 
 
-# ---- nextion.set_component_background_color ----
 @automation.register_action(
     "nextion.set_component_background_color",
     SetComponentBackgroundColorAction,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_COLOR): cv.templatable(cv.int_),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_COLOR): cv.templatable(cv.int_),
+        }
+    ),
 )
 async def nextion_set_component_bco_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
@@ -246,15 +278,16 @@ async def nextion_set_component_bco_to_code(config, action_id, template_args, ar
     return var
 
 
-# ---- nextion.set_component_font_color ----
 @automation.register_action(
     "nextion.set_component_font_color",
     SetComponentFontColorAction,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_COLOR): cv.templatable(cv.int_),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_COLOR): cv.templatable(cv.int_),
+        }
+    ),
 )
 async def nextion_set_component_pco_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
@@ -265,17 +298,20 @@ async def nextion_set_component_pco_to_code(config, action_id, template_args, ar
     return var
 
 
-# ---- nextion.set_component_visibility ----
 @automation.register_action(
     "nextion.set_component_visibility",
     SetComponentVisibilityAction,
-    cv.Schema({
-        cv.Optional(CONF_ID): cv.use_id(NextionSimple),
-        cv.Required(CONF_COMPONENT): cv.string,
-        cv.Required(CONF_STATE): cv.templatable(cv.boolean),
-    }),
+    cv.Schema(
+        {
+            cv.Optional(CONF_ID): cv.use_id(NextionSimple),
+            cv.Required(CONF_COMPONENT): cv.string,
+            cv.Required(CONF_STATE): cv.templatable(cv.boolean),
+        }
+    ),
 )
-async def nextion_set_component_visibility_to_code(config, action_id, template_args, args):
+async def nextion_set_component_visibility_to_code(
+    config, action_id, template_args, args
+):
     parent = await _get_parent_from_config(config)
     var = cg.new_Pvariable(action_id, SetComponentVisibilityAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
