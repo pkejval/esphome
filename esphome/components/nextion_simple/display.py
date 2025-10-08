@@ -6,26 +6,26 @@ from esphome.const import CONF_ID, CONF_UART_ID, CONF_TRIGGER_ID
 
 DEPENDENCIES = ["uart"]
 
-# Namespace komponenty v C++ zůstává nextion_simple
-nextion_ns = cg.esphome_ns.namespace("nextion_simple")
-NextionSimple = nextion_ns.class_("NextionSimple", cg.Component)
+# Namespace držíme podle C++ (nextion_simple)
+ns = cg.esphome_ns.namespace("nextion_simple")
+NextionSimple = ns.class_("NextionSimple", cg.Component)
 
 # Triggery
-NextionSetupTrigger = nextion_ns.class_("NextionSetupTrigger", automation.Trigger.template())
-NextionPageTrigger = nextion_ns.class_("NextionPageTrigger", automation.Trigger.template())
-NextionReadyTrigger = nextion_ns.class_("NextionReadyTrigger", automation.Trigger.template())
+NextionSetupTrigger = ns.class_("NextionSetupTrigger", automation.Trigger.template())
+NextionPageTrigger = ns.class_("NextionPageTrigger", automation.Trigger.template())
+NextionReadyTrigger = ns.class_("NextionReadyTrigger", automation.Trigger.template())
 
 # C++ Action třídy
-SetComponentValueAction = nextion_ns.class_("SetComponentValueAction", automation.Action.template())
-SetComponentTextAction = nextion_ns.class_("SetComponentTextAction", automation.Action.template())
-SetComponentPiccAction = nextion_ns.class_("SetComponentPiccAction", automation.Action.template())
-SetComponentPicc1Action = nextion_ns.class_("SetComponentPicc1Action", automation.Action.template())
-SetComponentBackgroundColorAction = nextion_ns.class_("SetComponentBackgroundColorAction", automation.Action.template())
-SetComponentFontColorAction = nextion_ns.class_("SetComponentFontColorAction", automation.Action.template())
-SetComponentVisibilityAction = nextion_ns.class_("SetComponentVisibilityAction", automation.Action.template())
+SetComponentValueAction = ns.class_("SetComponentValueAction", automation.Action.template())
+SetComponentTextAction = ns.class_("SetComponentTextAction", automation.Action.template())
+SetComponentPiccAction = ns.class_("SetComponentPiccAction", automation.Action.template())
+SetComponentPicc1Action = ns.class_("SetComponentPicc1Action", automation.Action.template())
+SetComponentBackgroundColorAction = ns.class_("SetComponentBackgroundColorAction", automation.Action.template())
+SetComponentFontColorAction = ns.class_("SetComponentFontColorAction", automation.Action.template())
+SetComponentVisibilityAction = ns.class_("SetComponentVisibilityAction", automation.Action.template())
 
-# Sjednocená stránkovací akce (musí existovat v .h s podporou int i string)
-SetPageAction = nextion_ns.class_("SetPageAction", automation.Action.template())
+# Sjednocená stránkovací akce (v C++ musí existovat jediná SetPageAction s metodami set_page(int) a set_page_name(std::string))
+SetPageAction = ns.class_("SetPageAction", automation.Action.template())
 
 # Auto-target registr instancí
 _NEXTION_INSTANCES = []
@@ -44,7 +44,7 @@ CONF_TEXT = "text"
 CONF_COLOR = "color"
 CONF_STATE = "state"
 
-# ============= CONFIG =============
+# ================= CONFIG =================
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionSimple),
     cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
@@ -77,7 +77,6 @@ async def to_code(config):
     if CONF_NEXTION_READY_COOLDOWN in config:
         cg.add(var.set_nextion_ready_cooldown(int(config[CONF_NEXTION_READY_COOLDOWN].total_milliseconds)))
 
-    # Triggery
     if CONF_ON_SETUP in config:
         for conf in config[CONF_ON_SETUP]:
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
@@ -103,10 +102,11 @@ async def _get_parent_from_config(config):
 
 # =============== AKCE ===============
 
-# ---- nextion.set_page (int nebo string; podporuje shorthand; auto-target) ----
+# ---- nextion.set_page (int nebo string; shorthand; auto-target)
 @automation.register_action(
     "nextion.set_page",
-    SetPageAction,
+    # Důležité: registrujeme jako obecný Action<> => C++ proměnná bude Action<>*
+    automation.Action.template(),
     cv.Any(
         cv.templatable(cv.int_),    # shorthand: - nextion.set_page: 2
         cv.templatable(cv.string),  # shorthand: - nextion.set_page: "home"
@@ -123,7 +123,7 @@ async def nextion_set_page_to_code(config, action_id, template_args, args):
     # Shorthand: samotná hodnota (int nebo string)
     if isinstance(config, (int, str)):
         parent = await _get_parent_from_config({})
-        var = cg.new_Pvariable(action_id, parent)
+        var = cg.new_Pvariable(action_id, SetPageAction, parent)
         if isinstance(config, int):
             page_t = await cg.templatable(config, template_args, cg.int_)
             cg.add(var.set_page(page_t))
@@ -134,7 +134,7 @@ async def nextion_set_page_to_code(config, action_id, template_args, args):
 
     # Plný tvar se slovníkem
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetPageAction, parent)
     page = config[CONF_PAGE]
 
     # zkus int
@@ -163,7 +163,7 @@ async def nextion_set_page_to_code(config, action_id, template_args, args):
 )
 async def nextion_set_component_value_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentValueAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     value = await cg.templatable(config[CONF_VALUE], template_args, cg.float_)
     cg.add(var.set_value(value))
@@ -182,7 +182,7 @@ async def nextion_set_component_value_to_code(config, action_id, template_args, 
 )
 async def nextion_set_component_text_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentTextAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     text = await cg.templatable(config[CONF_TEXT], template_args, cg.std_string)
     cg.add(var.set_text(text))
@@ -201,7 +201,7 @@ async def nextion_set_component_text_to_code(config, action_id, template_args, a
 )
 async def nextion_set_component_picc_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentPiccAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     value = await cg.templatable(config[CONF_VALUE], template_args, cg.int_)
     cg.add(var.set_value(value))
@@ -220,7 +220,7 @@ async def nextion_set_component_picc_to_code(config, action_id, template_args, a
 )
 async def nextion_set_component_picc1_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentPicc1Action, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     value = await cg.templatable(config[CONF_VALUE], template_args, cg.int_)
     cg.add(var.set_value(value))
@@ -239,7 +239,7 @@ async def nextion_set_component_picc1_to_code(config, action_id, template_args, 
 )
 async def nextion_set_component_bco_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentBackgroundColorAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     color = await cg.templatable(config[CONF_COLOR], template_args, cg.int_)
     cg.add(var.set_color(color))
@@ -258,7 +258,7 @@ async def nextion_set_component_bco_to_code(config, action_id, template_args, ar
 )
 async def nextion_set_component_pco_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentFontColorAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     color = await cg.templatable(config[CONF_COLOR], template_args, cg.int_)
     cg.add(var.set_color(color))
@@ -277,7 +277,7 @@ async def nextion_set_component_pco_to_code(config, action_id, template_args, ar
 )
 async def nextion_set_component_visibility_to_code(config, action_id, template_args, args):
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, parent)
+    var = cg.new_Pvariable(action_id, SetComponentVisibilityAction, parent)
     cg.add(var.set_component_name(config[CONF_COMPONENT]))
     state = await cg.templatable(config[CONF_STATE], template_args, cg.bool_)
     cg.add(var.set_state(state))
