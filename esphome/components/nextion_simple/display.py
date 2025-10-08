@@ -21,6 +21,8 @@ SetComponentPicc1Action = nextion_simple_ns.class_("SetComponentPicc1Action", au
 SetComponentBackgroundColorAction = nextion_simple_ns.class_("SetComponentBackgroundColorAction", automation.Action.template())
 SetComponentFontColorAction = nextion_simple_ns.class_("SetComponentFontColorAction", automation.Action.template())
 SetComponentVisibilityAction = nextion_simple_ns.class_("SetComponentVisibilityAction", automation.Action.template())
+
+# set_page: máme dvě C++ akce (int a string)
 SetPageAction = nextion_simple_ns.class_("SetPageAction", automation.Action.template())
 SetPageByNameAction = nextion_simple_ns.class_("SetPageByNameAction", automation.Action.template())
 
@@ -40,6 +42,8 @@ CONF_TEXT = "text"
 CONF_COLOR = "color"
 CONF_STATE = "state"
 
+
+# ================= CONFIG =================
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(NextionSimple),
     cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
@@ -59,7 +63,8 @@ CONFIG_SCHEMA = cv.Schema({
 })
 
 async def to_code(config):
-    var = cg.new_Pvariable(config[cg.CONF_ID])
+    # 🔧 FIX: používej CONF_ID z esphome.const
+    var = cg.new_Pvariable(config[CONF_ID])
     _NEXTION_INSTANCES.append(var)
     await cg.register_component(var, config)
 
@@ -87,7 +92,8 @@ async def to_code(config):
             trig = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
             await automation.build_automation(trig, [], conf)
 
-# helper: získej parent s auto-ID
+
+# ---------- helper pro auto-ID ----------
 async def _get_parent_from_config(config):
     if CONF_ID in config:
         return await cg.get_variable(config[CONF_ID])
@@ -95,16 +101,17 @@ async def _get_parent_from_config(config):
         return _NEXTION_INSTANCES[0]
     raise cv.Invalid("Je více než jedna instance 'nextion_simple' – uveď 'id:' v akci.")
 
-# ============ AKCE ============
 
-# sjednocené nextion_simple.set_page (int nebo string; podporuje i shorthand)
+# ================== AKCE ==================
+
+# ---- sjednocené nextion_simple.set_page (int nebo string; podporuje shorthand) ----
 @automation.register_action(
     "nextion_simple.set_page",
-    SetPageAction,  # registrace pod jednou akcí; ve factory můžeme vrátit i SetPageByNameAction
+    automation.Action.template(),  # rozhodneme dynamicky, kterou C++ akci vytvořit
     cv.Any(
-        cv.templatable(cv.int_),         # shorthand: - nextion_simple.set_page: 2
-        cv.templatable(cv.string),       # shorthand: - nextion_simple.set_page: "home"
-        cv.Schema({                      # plný tvar (s volitelným id)
+        cv.templatable(cv.int_),    # shorthand: - nextion_simple.set_page: 2
+        cv.templatable(cv.string),  # shorthand: - nextion_simple.set_page: "home"
+        cv.Schema({                 # plný tvar (s volitelným id)
             cv.Optional(CONF_ID): cv.use_id(NextionSimple),
             cv.Required(CONF_PAGE): cv.Any(
                 cv.templatable(cv.int_),
@@ -114,40 +121,41 @@ async def _get_parent_from_config(config):
     ),
 )
 async def nextion_set_page_to_code(config, action_id, template_args):
-    # shorthand: samotná hodnota
+    # Shorthand: samotná hodnota (int nebo string)
     if isinstance(config, (int, str)) or (hasattr(config, "is_template") and config.is_template):
         parent = await _get_parent_from_config({})
         if isinstance(config, int):
-            var = cg.new_Pvariable(action_id, parent, SetPageAction)  # konstruktor (parent) odpovídá C++ akci
+            var = cg.new_Pvariable(action_id, SetPageAction(parent))
             page_t = await cg.templatable(config, template_args, cg.int_)
             cg.add(var.set_page(page_t))
             return var
         else:
-            var = cg.new_Pvariable(action_id, parent, SetPageByNameAction)
+            var = cg.new_Pvariable(action_id, SetPageByNameAction(parent))
             name_t = await cg.templatable(config, template_args, cg.std_string)
             cg.add(var.set_page_name(name_t))
             return var
 
-    # plný tvar se slovníkem
+    # Plný tvar se slovníkem
     parent = await _get_parent_from_config(config)
     page = config[CONF_PAGE]
 
-    # pokus o int
+    # Nejprve zkusíme jako int
     try:
-        var = cg.new_Pvariable(action_id, parent, SetPageAction)
+        var = cg.new_Pvariable(action_id, SetPageAction(parent))
         page_t = await cg.templatable(page, template_args, cg.int_)
         cg.add(var.set_page(page_t))
         return var
     except Exception:
         pass
 
-    # fallback: string
-    var = cg.new_Pvariable(action_id, parent, SetPageByNameAction)
+    # Fallback: string
+    var = cg.new_Pvariable(action_id, SetPageByNameAction(parent))
     name_t = await cg.templatable(page, template_args, cg.std_string)
     cg.add(var.set_page_name(name_t))
     return var
 
 
+# ---- set_component_value ----
 @automation.register_action(
     "nextion_simple.set_component_value",
     SetComponentValueAction,
@@ -166,6 +174,7 @@ async def nextion_set_component_value_to_code(config, action_id, template_args):
     return var
 
 
+# ---- set_component_text ----
 @automation.register_action(
     "nextion_simple.set_component_text",
     SetComponentTextAction,
@@ -184,6 +193,7 @@ async def nextion_set_component_text_to_code(config, action_id, template_args):
     return var
 
 
+# ---- set_component_picc ----
 @automation.register_action(
     "nextion_simple.set_component_picc",
     SetComponentPiccAction,
@@ -202,6 +212,7 @@ async def nextion_set_component_picc_to_code(config, action_id, template_args):
     return var
 
 
+# ---- set_component_picc1 ----
 @automation.register_action(
     "nextion_simple.set_component_picc1",
     SetComponentPicc1Action,
@@ -220,6 +231,7 @@ async def nextion_set_component_picc1_to_code(config, action_id, template_args):
     return var
 
 
+# ---- set_component_background_color ----
 @automation.register_action(
     "nextion_simple.set_component_background_color",
     SetComponentBackgroundColorAction,
@@ -238,6 +250,7 @@ async def nextion_set_component_bco_to_code(config, action_id, template_args):
     return var
 
 
+# ---- set_component_font_color ----
 @automation.register_action(
     "nextion_simple.set_component_font_color",
     SetComponentFontColorAction,
@@ -256,6 +269,7 @@ async def nextion_set_component_pco_to_code(config, action_id, template_args):
     return var
 
 
+# ---- set_component_visibility ----
 @automation.register_action(
     "nextion_simple.set_component_visibility",
     SetComponentVisibilityAction,
