@@ -274,43 +274,15 @@ template<typename... Ts> class SetComponentVisibilityAction : public Action<Ts..
   int state_{1};
 };
 
-// Přepnutí stránky podle ID
-template<typename... Ts> class SetPageIdAction : public Action<Ts...> {
+template<typename... Ts> class SetPageAction : public Action<Ts...> {
  public:
-  explicit SetPageIdAction(NextionSimple *parent) : parent_(parent) {}
+  explicit SetPageAction(NextionSimple *parent) : parent_(parent) {}
   void set_page(int p) { page_ = p; }
   void play(Ts... /*x*/) override { this->parent_->set_page(this->page_); }
 
  private:
   NextionSimple *parent_;
   int page_{0};
-};
-
-// Přepnutí stránky podle názvu
-template<typename... Ts> class SetPageAction : public Action<Ts...> {
- public:
-  explicit SetPageAction(NextionSimple *parent) : parent_(parent) {}
-  void set_page(int p) {
-    is_name_ = false;
-    page_ = p;
-  }
-  void set_page_name(const std::string &n) {
-    is_name_ = true;
-    name_ = n;
-  }
-
-  void play(Ts... /*x*/) override {
-    if (is_name_)
-      parent_->set_page(name_);
-    else
-      parent_->set_page(page_);
-  }
-
- private:
-  NextionSimple *parent_;
-  int page_{0};
-  std::string name_;
-  bool is_name_{false};
 };
 
 // ===================== Triggers =====================
