@@ -57,11 +57,11 @@ bool NextionSimple::prepare_nextion_for_upload_idf_(uint32_t baud_rate) {
     uint8_t d; if (!this->uart_parent_->read_byte(&d)) break;
   }
 
-  // whmi-wris <length>,<baud>,1
+  // whmi-wri <length>,<baud>,1
   char cmd[64];
-  int n = snprintf(cmd, sizeof(cmd), "whmi-wris %" PRIu32 ",%" PRIu32 ",1", this->content_length_, baud_rate);
+  int n = snprintf(cmd, sizeof(cmd), "whmi-wri %" PRIu32 ",%" PRIu32 ",1", this->content_length_, baud_rate);
   if (n <= 0 || (size_t) n >= sizeof(cmd)) {
-    ESP_LOGE(TAG, "Failed to format whmi-wris");
+    ESP_LOGE(TAG, "Failed to format whmi-wri");
     return false;
   }
   this->send_command(cmd, (size_t) n);
