@@ -36,8 +36,9 @@ SetComponentVisibilityAction = ns.class_(
     "SetComponentVisibilityAction", automation.Action.template()
 )
 
-# Sjednocená stránkovací akce (musí existovat v C++ a mít set_page(int) + set_page_name(std::string))
-SetPageAction = ns.class_("SetPageAction", automation.Action.template())
+SetPageIdAction = ns.class_("SetPageIdAction", automation.Action.template())
+SetPageNameAction = ns.class_("SetPageNameAction", automation.Action.template())
+
 
 _NEXTION_INSTANCES = []
 
@@ -130,13 +131,12 @@ async def _get_parent_from_config(config):
 # ---- nextion.set_page (int nebo string; shorthand; auto-target)
 @automation.register_action(
     "nextion.set_page",
-    # registrujeme jako obecný Action<>, ale v builderu vytvoříme konkrétní SetPageAction
-    automation.Action.template(),
+    automation.Action.template(),  # registrujeme genericky; instanci vybereme v builderu
     cv.Any(
         cv.templatable(cv.int_),  # shorthand: - nextion.set_page: 2
         cv.templatable(cv.string),  # shorthand: - nextion.set_page: "home"
         cv.Schema(
-            {  # plný tvar (s volitelným id)
+            {  # plný tvar
                 cv.Optional(CONF_ID): cv.use_id(NextionSimple),
                 cv.Required(CONF_PAGE): cv.Any(
                     cv.templatable(cv.int_),
@@ -147,32 +147,33 @@ async def _get_parent_from_config(config):
     ),
 )
 async def nextion_set_page_to_code(config, action_id, template_args, args):
-    # Shorthand: samotná hodnota (int nebo string)
+    # Shorthand (jen hodnota)
     if isinstance(config, (int, str)):
         parent = await _get_parent_from_config({})
-        var = cg.new_Pvariable(action_id, SetPageAction, parent)
         if isinstance(config, int):
+            var = cg.new_Pvariable(action_id, SetPageIdAction, parent)
             page_t = await cg.templatable(config, template_args, cg.int_)
             cg.add(var.set_page(page_t))
+            return var
         else:
+            var = cg.new_Pvariable(action_id, SetPageNameAction, parent)
             name_t = await cg.templatable(config, template_args, cg.std_string)
             cg.add(var.set_page_name(name_t))
-        return var
+            return var
 
     # Plný tvar se slovníkem
     parent = await _get_parent_from_config(config)
-    var = cg.new_Pvariable(action_id, SetPageAction, parent)
     page = config[CONF_PAGE]
-
     # zkus int
     try:
+        var = cg.new_Pvariable(action_id, SetPageIdAction, parent)
         page_t = await cg.templatable(page, template_args, cg.int_)
         cg.add(var.set_page(page_t))
         return var
     except Exception:
         pass
-
     # fallback: string
+    var = cg.new_Pvariable(action_id, SetPageNameAction, parent)
     name_t = await cg.templatable(page, template_args, cg.std_string)
     cg.add(var.set_page_name(name_t))
     return var
