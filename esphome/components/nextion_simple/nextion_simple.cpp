@@ -256,7 +256,13 @@ void NextionSimple::set_page(int page) {
   this->on_page_callback_.call(page);
 }
 
-void NextionSimple::goto_page(int page) { this->set_page(page); }
+void NextionSimple::set_page(const std::string &page_name) {
+  if (page_name.empty()) return;
+  this->send_command_printf("page %s", page_name.c_str());
+  // V write-only režimu neznáme ID -> označíme -1
+  this->current_page_ = -1;
+  this->on_page_callback_.call(-1);
+}
 
 // ====== Low-level send ======
 

@@ -40,7 +40,7 @@ class NextionSimple : public Component {
   void set_component_visibility(const std::string &component_name, int state);
   void set_nextion_ready_cooldown(uint32_t cooldown) { nextion_ready_cooldown_ = cooldown; }
   void set_page(int page);
-  void goto_page(int page);
+  void set_page(const std::string &page_name);
 
   // Low-level fast send: one buffered write + 0xFF 0xFF 0xFF
   inline void send_command(const char *cmd, size_t len) {
@@ -270,6 +270,17 @@ class SetPageAction : public Action<Ts...> {
  protected:
   NextionSimple *parent_;
   int page_{0};
+};
+
+template<typename... Ts>
+class SetPageByNameAction : public Action<Ts...> {
+ public:
+  explicit SetPageByNameAction(NextionSimple *parent) : parent_(parent) {}
+  void set_page_name(const std::string &n) { this->name_ = n; }
+  void play(Ts... /*x*/) override { this->parent_->set_page(this->name_); }
+ protected:
+  NextionSimple *parent_;
+  std::string name_;
 };
 
 // ===================== Triggers =====================
