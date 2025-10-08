@@ -104,13 +104,13 @@ async def _get_parent_from_config(config):
 
 # ================== AKCE ==================
 
-# ---- sjednocené nextion_simple.set_page (int nebo string; podporuje shorthand) ----
+# ---- sjednocené nextion.set_page (int nebo string; podporuje shorthand) ----
 @automation.register_action(
-    "nextion_simple.set_page",
+    "nextion.set_page",
     automation.Action.template(),  # rozhodneme dynamicky, kterou C++ akci vytvořit
     cv.Any(
-        cv.templatable(cv.int_),    # shorthand: - nextion_simple.set_page: 2
-        cv.templatable(cv.string),  # shorthand: - nextion_simple.set_page: "home"
+        cv.templatable(cv.int_),    # shorthand: - nextion.set_page: 2
+        cv.templatable(cv.string),  # shorthand: - nextion.set_page: "home"
         cv.Schema({                 # plný tvar (s volitelným id)
             cv.Optional(CONF_ID): cv.use_id(NextionSimple),
             cv.Required(CONF_PAGE): cv.Any(
@@ -157,7 +157,7 @@ async def nextion_set_page_to_code(config, action_id, template_args):
 
 # ---- set_component_value ----
 @automation.register_action(
-    "nextion_simple.set_component_value",
+    "nextion.set_component_value",
     SetComponentValueAction,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
@@ -176,7 +176,7 @@ async def nextion_set_component_value_to_code(config, action_id, template_args):
 
 # ---- set_component_text ----
 @automation.register_action(
-    "nextion_simple.set_component_text",
+    "nextion.set_component_text",
     SetComponentTextAction,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
@@ -195,7 +195,7 @@ async def nextion_set_component_text_to_code(config, action_id, template_args):
 
 # ---- set_component_picc ----
 @automation.register_action(
-    "nextion_simple.set_component_picc",
+    "nextion.set_component_picc",
     SetComponentPiccAction,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
@@ -214,7 +214,7 @@ async def nextion_set_component_picc_to_code(config, action_id, template_args):
 
 # ---- set_component_picc1 ----
 @automation.register_action(
-    "nextion_simple.set_component_picc1",
+    "nextion.set_component_picc1",
     SetComponentPicc1Action,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
@@ -233,7 +233,7 @@ async def nextion_set_component_picc1_to_code(config, action_id, template_args):
 
 # ---- set_component_background_color ----
 @automation.register_action(
-    "nextion_simple.set_component_background_color",
+    "nextion.set_component_background_color",
     SetComponentBackgroundColorAction,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
@@ -252,7 +252,7 @@ async def nextion_set_component_bco_to_code(config, action_id, template_args):
 
 # ---- set_component_font_color ----
 @automation.register_action(
-    "nextion_simple.set_component_font_color",
+    "nextion.set_component_font_color",
     SetComponentFontColorAction,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
@@ -271,7 +271,7 @@ async def nextion_set_component_pco_to_code(config, action_id, template_args):
 
 # ---- set_component_visibility ----
 @automation.register_action(
-    "nextion_simple.set_component_visibility",
+    "nextion.set_component_visibility",
     SetComponentVisibilityAction,
     cv.Schema({
         cv.Optional(CONF_ID): cv.use_id(NextionSimple),
