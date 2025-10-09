@@ -89,125 +89,138 @@ bool NextionSimple::prepare_nextion_for_upload_idf_(uint32_t baud_rate) {
 
 // Range upload (HEAD → GET s Range) – převod z originálu na naši třídu
 int NextionSimple::upload_by_chunks_idf_(void *http_client_v, uint32_t &range_start) {
-  auto http_client = reinterpret_cast<esp_http_client_handle_t>(http_client_v);
+  auto http = reinterpret_cast<esp_http_client_handle_t>(http_client_v);
 
-  uint32_t range_size = this->tft_size_ - range_start;
-  uint32_t range_end = ((upload_first_chunk_sent_ || this->tft_size_ < 4096) ? this->tft_size_ : 4096) - 1;
-
-  if (range_size == 0 || range_end <= range_start) {
-    ESP_LOGE(TAG, "Invalid range start=%" PRIu32 " end=%" PRIu32, range_start, range_end);
+  if (range_start >= this->tft_size_) {
+    ESP_LOGW(TAG, "Range start beyond EOF");
     return -1;
   }
 
-  char range_header[32];
-  snprintf(range_header, sizeof(range_header), "bytes=%" PRIu32 "-%" PRIu32, range_start, range_end);
-  esp_http_client_set_header(http_client, "Range", range_header);
+  const uint32_t block = 4096u;
+  uint32_t range_end = range_start + block - 1;
+  if (range_end >= this->tft_size_) range_end = this->tft_size_ - 1;
 
-  esp_err_t err = esp_http_client_open(http_client, 0);
+  char range_header[48];
+  // bytes=FROM-TO
+  snprintf(range_header, sizeof(range_header), "bytes=%" PRIu32 "-%" PRIu32, range_start, range_end);
+  esp_http_client_set_header(http, "Range", range_header);
+
+  esp_err_t err = esp_http_client_open(http, 0);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
     return -1;
   }
 
-  const int chunk_size = esp_http_client_fetch_headers(http_client);
-  if (chunk_size <= 0) {
-    ESP_LOGE(TAG, "Failed to get chunk content length: %d", chunk_size);
-    esp_http_client_close(http_client);
+  int hdr = esp_http_client_fetch_headers(http);
+  if (hdr < 0) {
+    ESP_LOGE(TAG, "fetch_headers failed: %s", esp_err_to_name((esp_err_t)hdr));
+    esp_http_client_close(http);
     return -1;
   }
 
-  // Alokace 4k (interní/PSRAM podle konfigurace)
+  int status = esp_http_client_get_status_code(http);
+  if (status != 206 && status != 200) {  // některé servery ignorují Range a pošlou 200 + celé tělo
+    ESP_LOGE(TAG, "Unexpected HTTP status: %d", status);
+    esp_http_client_close(http);
+    return -1;
+  }
+
+  const uint32_t want32 = (status == 206) ? (range_end - range_start + 1) : this->tft_size_;
+  if (want32 == 0) {
+    esp_http_client_close(http);
+    return -1;
+  }
+
   uint8_t *buffer = (uint8_t*) heap_caps_malloc(4096, MALLOC_CAP_DEFAULT);
   if (!buffer) {
     ESP_LOGE(TAG, "Failed to allocate upload buffer");
-    esp_http_client_close(http_client);
+    esp_http_client_close(http);
     return -1;
   }
 
-  while (true) {
+  uint32_t remain = want32;
+  while (remain > 0) {
     App.feed_wdt();
-    const uint16_t want = this->content_length_ < 4096 ? this->content_length_ : 4096;
+    const uint16_t chunk = (remain > 4096u) ? 4096u : (uint16_t) remain;
+
     uint16_t read_len = 0;
     uint8_t retries = 0;
-
-    while (retries < 5 && read_len < want) {
-      int r = esp_http_client_read(http_client, reinterpret_cast<char *>(buffer) + read_len, want - read_len);
+    while (retries < 5 && read_len < chunk) {
+      int r = esp_http_client_read(http, reinterpret_cast<char*>(buffer) + read_len, chunk - read_len);
       if (r > 0) { read_len += (uint16_t) r; retries = 0; }
       else { retries++; vTaskDelay(pdMS_TO_TICKS(2)); }
       App.feed_wdt();
     }
-
-    if (read_len != want) {
-      ESP_LOGE(TAG, "Short read: %u of %u", (unsigned)read_len, (unsigned)want);
+    if (read_len != chunk) {
+      ESP_LOGE(TAG, "Short read: %u of %u", (unsigned)read_len, (unsigned)chunk);
       free(buffer);
-      esp_http_client_close(http_client);
+      esp_http_client_close(http);
       return -1;
     }
 
-    // Stream do Nextionu (raw)
+    // stream do Nextionu
     size_t sent = 0;
     while (sent < read_len) {
       size_t n = read_len - sent;
       if (n > NX_STREAM_CHUNK) n = NX_STREAM_CHUNK;
       this->uart_parent_->write_array(buffer + sent, n);
       sent += n;
-      // yield
 #if defined(USE_ESP_IDF)
       vTaskDelay(pdMS_TO_TICKS(0));
 #endif
     }
 
-    // Po každém bloku čekáme na odpověď (0x05 OK nebo 0x08 partial)
-    std::string ack;
-    this->wait_for_ack_idf_(upload_first_chunk_sent_ ? 500 : 5000, ack);
-
+    remain -= read_len;
     this->content_length_ -= read_len;
-    const float pct = 100.0f * (this->tft_size_ - this->content_length_) / this->tft_size_;
-#ifdef USE_PSRAM
-    ESP_LOGD(TAG,
-             "Uploaded %0.2f%%, remaining %" PRIu32 " B, free: %" PRIu32 " (DRAM) + %" PRIu32 " (PSRAM)",
-             pct, this->content_length_,
-             (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-#else
-    ESP_LOGD(TAG, "Uploaded %0.2f%%, remaining %" PRIu32 " B, free: %" PRIu32,
-             pct, this->content_length_, (uint32_t)esp_get_free_heap_size());
-#endif
-    upload_first_chunk_sent_ = true;
-
-    if (!ack.empty()) {
-      const uint8_t *ab = reinterpret_cast<const uint8_t*>(ack.data());
-      // 0x08 + 4B offset → požadavek na partial resume
-      if (ab[0] == 0x08 && ack.size() >= 5) {
-        uint32_t result = 0;
-        for (int j = 0; j < 4; ++j) result += (uint32_t)ab[j + 1] << (8 * j);
-        if (result > 0) {
-          ESP_LOGI(TAG, "Nextion requested resume at %" PRIu32, result);
-          this->content_length_ = this->tft_size_ - result;
-          range_start = result;
-        } else {
-          range_start = range_end + 1;
-        }
-        free(buffer);
-        esp_http_client_close(http_client);
-        return range_end + 1;
-      } else if (ab[0] != 0x05 && ab[0] != 0x08) {
-        ESP_LOGE(TAG, "Invalid ACK: [%s]",
-                 format_hex_pretty(reinterpret_cast<const uint8_t*>(ack.data()), ack.size()).c_str());
-        free(buffer);
-        esp_http_client_close(http_client);
-        return -1;
-      }
-    }
-
-    if (read_len == 0) break;  // konec
   }
 
-  range_start = range_end + 1;
+  // po bloku čekáme na ACK (0x05 OK / 0x08 resume)
+  std::string ack;
+  this->wait_for_ack_idf_(upload_first_chunk_sent_ ? 500 : 5000, ack);
+  upload_first_chunk_sent_ = true;
+
   free(buffer);
-  esp_http_client_close(http_client);
-  return range_end + 1;
+  esp_http_client_close(http);
+
+  if (!ack.empty()) {
+    const uint8_t *ab = reinterpret_cast<const uint8_t*>(ack.data());
+    if (ab[0] == 0x08 && ack.size() >= 5) {
+      uint32_t result = 0;
+      for (int j = 0; j < 4; ++j) result |= ((uint32_t)ab[j + 1]) << (8 * j);
+      ESP_LOGI(TAG, "Nextion requested resume at %" PRIu32, result);
+      if (result > this->tft_size_) {
+        ESP_LOGE(TAG, "Resume offset beyond EOF");
+        return -1;
+      }
+      this->content_length_ = this->tft_size_ - result;
+      range_start = result;
+      return (int) range_start;
+    } else if (ab[0] != 0x05 && ab[0] != 0x08) {
+      ESP_LOGE(TAG, "Invalid ACK: [%s]",
+               format_hex_pretty(reinterpret_cast<const uint8_t*>(ack.data()), ack.size()).c_str());
+      return -1;
+    }
+  }
+
+  // posun na další blok
+  range_start = range_end + 1;
+
+#ifdef USE_PSRAM
+  ESP_LOGD(TAG, "Uploaded %0.2f%%, remaining %" PRIu32 " B, free: %" PRIu32 " (DRAM) + %" PRIu32 " (PSRAM)",
+           100.0f * (this->tft_size_ - this->content_length_) / this->tft_size_,
+           this->content_length_,
+           (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#else
+  ESP_LOGD(TAG, "Uploaded %0.2f%%, remaining %" PRIu32 " B, free: %" PRIu32,
+           100.0f * (this->tft_size_ - this->content_length_) / this->tft_size_,
+           this->content_length_,
+           (uint32_t)esp_get_free_heap_size());
+#endif
+
+  return (int) range_start;
 }
+
 
 bool NextionSimple::upload_tft_esp_idf_() {
   ESP_LOGD(TAG, "Nextion TFT upload requested");
@@ -225,73 +238,131 @@ bool NextionSimple::upload_tft_esp_idf_() {
   }
 
   this->is_updating_ = true;
-
-  // Zapamatuj původní baud
   this->original_baud_rate_ = this->uart_parent_->get_baud_rate();
 
-  // HEAD pro velikost
-  esp_http_client_config_t cfg = {};
-  cfg.url = this->tft_url_.c_str();
-  cfg.cert_pem = nullptr;
-  cfg.method = HTTP_METHOD_HEAD;
-  cfg.timeout_ms = 15000;
-  cfg.disable_auto_redirect = false;
-  cfg.max_redirection_count = 10;
+  // ========== PROBE SIZE (HEAD -> open+fetch_headers, fallback GET Range 0-0) ==========
+  uint32_t total_size = 0;
+  {
+    esp_http_client_config_t probe_cfg = {};
+    probe_cfg.url = this->tft_url_.c_str();
+    probe_cfg.method = HTTP_METHOD_HEAD;
+    probe_cfg.timeout_ms = 15000;
+    probe_cfg.disable_auto_redirect = false;
+    probe_cfg.max_redirection_count = 10;
 
-  auto http = esp_http_client_init(&cfg);
-  if (!http) {
-    ESP_LOGE(TAG, "esp_http_client_init failed");
+    auto probe = esp_http_client_init(&probe_cfg);
+    if (!probe) {
+      ESP_LOGE(TAG, "esp_http_client_init (probe) failed");
+      this->is_updating_ = false; this->upload_in_progress_ = false;
+      return false;
+    }
+    esp_http_client_set_header(probe, "User-Agent", "esphome-nextion-uploader");
+    esp_http_client_set_header(probe, "Accept-Encoding", "identity");
+    esp_http_client_set_header(probe, "Connection", "close");
+
+    esp_err_t err = esp_http_client_open(probe, 0);
+    if (err == ESP_OK) {
+      int hdrs = esp_http_client_fetch_headers(probe);
+      if (hdrs >= 0) {
+        int status = esp_http_client_get_status_code(probe);
+        long long cl = esp_http_client_get_content_length(probe);
+        ESP_LOGD(TAG, "HEAD status=%d, content-length=%lld", status, cl);
+        if ((status == 200 || status == 206) && cl > 0 && cl < (1LL<<31)) {
+          total_size = (uint32_t) cl;
+        }
+      } else {
+        ESP_LOGW(TAG, "HEAD fetch_headers failed: %s", esp_err_to_name((esp_err_t)hdrs));
+      }
+      esp_http_client_close(probe);
+    } else {
+      ESP_LOGW(TAG, "HTTP open (HEAD) failed: %s", esp_err_to_name(err));
+    }
+    esp_http_client_cleanup(probe);
+  }
+
+  // fallback: GET Range 0-0 pro zisk Content-Range/Content-Length
+  if (total_size == 0) {
+    esp_http_client_config_t probe_cfg = {};
+    probe_cfg.url = this->tft_url_.c_str();
+    probe_cfg.method = HTTP_METHOD_GET;
+    probe_cfg.timeout_ms = 15000;
+    probe_cfg.disable_auto_redirect = false;
+    probe_cfg.max_redirection_count = 10;
+
+    auto probe = esp_http_client_init(&probe_cfg);
+    if (!probe) {
+      ESP_LOGE(TAG, "esp_http_client_init (probe2) failed");
+      this->is_updating_ = false; this->upload_in_progress_ = false;
+      return false;
+    }
+    esp_http_client_set_header(probe, "User-Agent", "esphome-nextion-uploader");
+    esp_http_client_set_header(probe, "Accept-Encoding", "identity");
+    esp_http_client_set_header(probe, "Connection", "keep-alive");
+    esp_http_client_set_header(probe, "Range", "bytes=0-0");
+
+    esp_err_t err = esp_http_client_perform(probe);
+    if (err == ESP_OK) {
+      int status = esp_http_client_get_status_code(probe);
+      char cr_buf[96] = {0};
+      int cr_len = esp_http_client_get_header(probe, "Content-Range", cr_buf, sizeof(cr_buf));
+      if (status == 206 && cr_len > 0) {
+        const char *slash = strrchr(cr_buf, '/'); // "bytes 0-0/NNN"
+        if (slash && slash[1]) total_size = (uint32_t) strtoul(slash+1, nullptr, 10);
+      }
+      if (total_size == 0) {
+        long long cl = esp_http_client_get_content_length(probe);
+        if (cl > 0 && cl < (1LL<<31)) total_size = (uint32_t) cl;
+      }
+    } else {
+      ESP_LOGE(TAG, "HTTP GET (probe2) failed: %s", esp_err_to_name(err));
+    }
+    esp_http_client_cleanup(probe);
+  }
+
+  if (total_size < 4096 || total_size > 134217728) {
+    ESP_LOGE(TAG, "File size out of range or unknown (size=%" PRIu32 ")", total_size);
     this->is_updating_ = false; this->upload_in_progress_ = false;
     return false;
   }
-  esp_http_client_set_header(http, "Connection", "keep-alive");
-
-  if (esp_http_client_perform(http) != ESP_OK) {
-    ESP_LOGE(TAG, "HTTP HEAD perform failed");
-    esp_http_client_cleanup(http);
-    this->is_updating_ = false; this->upload_in_progress_ = false;
-    return false;
-  }
-  int status = esp_http_client_get_status_code(http);
-  if (status != 200 && status != 206) {
-    ESP_LOGE(TAG, "Unexpected HTTP status: %d", status);
-    esp_http_client_cleanup(http);
-    this->is_updating_ = false; this->upload_in_progress_ = false;
-    return false;
-  }
-
-  this->tft_size_ = esp_http_client_get_content_length(http);
+  this->tft_size_ = total_size;
+  this->content_length_ = total_size;
   ESP_LOGD(TAG, "TFT file size: %" PRIu32 " B", this->tft_size_);
-  if (this->tft_size_ < 4096 || this->tft_size_ > 134217728) {
-    ESP_LOGE(TAG, "File size out of range");
-    esp_http_client_cleanup(http);
-    this->is_updating_ = false; this->upload_in_progress_ = false;
-    return false;
-  }
-  this->content_length_ = this->tft_size_;
 
-  // Připrav Nextion k uploadu
-  // Volíme baud: pokud není v podpoře, nech původní
+  // ========== Připrav Nextion ==========
   static const uint32_t SUPPORTED[] = {2400,4800,9600,19200,31250,38400,57600,115200,230400,250000,256000,512000,921600};
   uint32_t desired_baud = 921600;
-  bool ok_baud = false;
-  for (auto b : SUPPORTED) if (b == desired_baud) { ok_baud = true; break; }
+  bool ok_baud = false; for (auto b : SUPPORTED) if (b == desired_baud) { ok_baud = true; break; }
   if (!ok_baud) desired_baud = this->original_baud_rate_;
 
   if (!this->prepare_nextion_for_upload_idf_(desired_baud)) {
     ESP_LOGE(TAG, "Nextion not ready for upload");
-    esp_http_client_cleanup(http);
+    // restore baud just in case
+    uint32_t cur = this->uart_parent_->get_baud_rate();
+    if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
     this->is_updating_ = false; this->upload_in_progress_ = false;
     return false;
   }
 
-  // Přepnout klienta na GET
-  if (esp_http_client_set_method(http, HTTP_METHOD_GET) != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to set GET");
-    esp_http_client_cleanup(http);
+  // ========== Fresh klient pro download ==========
+  esp_http_client_config_t cfg_dl = {};
+  cfg_dl.url = this->tft_url_.c_str();
+  cfg_dl.method = HTTP_METHOD_GET;
+  cfg_dl.timeout_ms = 15000;
+  cfg_dl.disable_auto_redirect = false;
+  cfg_dl.max_redirection_count = 10;
+
+  auto http = esp_http_client_init(&cfg_dl);
+  if (!http) {
+    ESP_LOGE(TAG, "esp_http_client_init (download) failed");
+    // restore baud
+    uint32_t cur = this->uart_parent_->get_baud_rate();
+    if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
     this->is_updating_ = false; this->upload_in_progress_ = false;
     return false;
   }
+  esp_http_client_set_header(http, "User-Agent", "esphome-nextion-uploader");
+  esp_http_client_set_header(http, "Accept-Encoding", "identity");
+  esp_http_client_set_header(http, "Connection", "keep-alive");
 
   ESP_LOGD(TAG, "Uploading TFT to Nextion...");
   uint32_t position = 0;
@@ -301,18 +372,16 @@ bool NextionSimple::upload_tft_esp_idf_() {
     int r = this->upload_by_chunks_idf_(http, position);
     if (r < 0) {
       ESP_LOGE(TAG, "Upload failed");
+
       esp_http_client_close(http);
       esp_http_client_cleanup(http);
-      // restore baud
+
       uint32_t cur = this->uart_parent_->get_baud_rate();
-      if (cur != this->original_baud_rate_) {
-        this->uart_parent_->set_baud_rate(this->original_baud_rate_);
-        this->uart_parent_->load_settings();
-      }
-      // cleanup flags
+      if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+
       this->is_updating_ = false;
       this->upload_in_progress_ = false;
-      // runtime zpět do write-only
+
       this->send_command_printf("bkcmd=0"); this->bkcmd_ = 0;
       this->enter_writeonly_mode_();
       return false;
@@ -325,7 +394,6 @@ bool NextionSimple::upload_tft_esp_idf_() {
   esp_http_client_close(http);
   esp_http_client_cleanup(http);
 
-  // Obnov baud
   uint32_t cur = this->uart_parent_->get_baud_rate();
   if (cur != this->original_baud_rate_) {
     ESP_LOGD(TAG, "Restoring baud %" PRIu32 " -> %" PRIu32, cur, this->original_baud_rate_);
@@ -333,19 +401,17 @@ bool NextionSimple::upload_tft_esp_idf_() {
     this->uart_parent_->load_settings();
   }
 
-  // Vypni odpovědi a vrať write-only
   this->send_command_printf("bkcmd=0"); this->bkcmd_ = 0;
   this->enter_writeonly_mode_();
 
   this->is_updating_ = false;
   this->upload_in_progress_ = false;
 
-  // (volitelné) restart ESP po úspěchu – některé buildy to dělají:
   delay(1500);
   arch_restart();
-
   return true;
 }
+
 
 #endif // USE_ESP_IDF
 
