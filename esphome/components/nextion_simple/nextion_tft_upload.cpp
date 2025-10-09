@@ -8,6 +8,11 @@
 #include <esp_heap_caps.h>
 #endif
 
+#if !defined(USE_ESP_IDF)
+  #include <HTTPClient.h>
+  #include <WiFiClientSecure.h>
+#endif
+
 #include <cinttypes>
 
 namespace esphome {
@@ -15,12 +20,343 @@ namespace nextion_simple {
 
 static const char *const TAG = "nextion_simple.upload";
 
-// ========= Common (Arduino placeholder) =========
+// ========= Arduino framework implementation =========
+#if !defined(USE_ESP_IDF)
+
+static constexpr size_t NX_STREAM_CHUNK = 1024;
+
 bool NextionSimple::upload_tft_arduino_() {
-  ESP_LOGE(TAG, "Arduino framework upload not implemented.");
+  ESP_LOGD(TAG, "Nextion TFT upload requested (Arduino)");
+  ESP_LOGD(TAG, "URL: %s", this->tft_url_.c_str());
+
+  if (this->is_updating_) {
+    ESP_LOGW(TAG, "Currently uploading");
+    this->upload_in_progress_ = false;
+    return false;
+  }
+  if (!network::is_connected()) {
+    ESP_LOGE(TAG, "Network is not connected");
+    this->upload_in_progress_ = false;
+    return false;
+  }
+
+  this->is_updating_ = true;
+  this->original_baud_rate_ = this->uart_parent_->get_baud_rate();
+
+  // ---- helpers ----
+  auto wait_for_ack = [&](uint32_t timeout_ms, std::string &out) -> bool {
+    out.clear();
+    const uint32_t deadline = millis() + timeout_ms;
+    uint32_t last_data = millis();
+    while (millis() < deadline) {
+      while (this->uart_parent_->available()) {
+        uint8_t b;
+        if (!this->uart_parent_->read_byte(&b)) break;
+        out.push_back(static_cast<char>(b));
+        last_data = millis();
+      }
+      if (!out.empty() && (millis() - last_data) > 10) break;
+      delay(2);
+      App.feed_wdt();
+    }
+    return !out.empty();
+  };
+
+  auto prepare_nextion_for_upload = [&](uint32_t baud_rate) -> bool {
+    // Wake & bright
+    this->send_command_printf("sleep=0");
+    this->send_command_printf("dim=100");
+    delay(250);
+    // purge RX
+    while (this->uart_parent_->available()) { uint8_t d; if (!this->uart_parent_->read_byte(&d)) break; }
+
+    // whmi-wri <length>,<baud>,1
+    char cmd[64];
+    int n = snprintf(cmd, sizeof(cmd), "whmi-wri %" PRIu32 ",%" PRIu32 ",1", this->content_length_, baud_rate);
+    if (n <= 0 || (size_t)n >= sizeof(cmd)) {
+      ESP_LOGE(TAG, "Failed to format whmi-wri");
+      return false;
+    }
+    this->send_command(cmd, (size_t)n);
+
+    // switch ESP baud if needed
+    if (baud_rate != this->original_baud_rate_) {
+      ESP_LOGD(TAG, "Changing baud rate from %" PRIu32 " to %" PRIu32, this->original_baud_rate_, baud_rate);
+      this->uart_parent_->set_baud_rate(baud_rate);
+      this->uart_parent_->load_settings();
+    }
+
+    // wait for 0x05
+    std::string resp;
+    if (!wait_for_ack(5000, resp)) {
+      ESP_LOGE(TAG, "Timeout waiting upload ACK");
+      return false;
+    }
+    bool ok = resp.find(static_cast<char>(0x05)) != std::string::npos;
+    ESP_LOGD(TAG, "Upload prep resp [%s] len=%u",
+             format_hex_pretty(reinterpret_cast<const uint8_t*>(resp.data()), resp.size()).c_str(),
+             (unsigned)resp.size());
+    return ok;
+  };
+
+  auto begin_http = [&](HTTPClient &http, Client &client, const char *url) -> bool {
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setReuse(false); // nový TCP pro jistotu na každé range
+    if (!http.begin(client, url)) return false;
+    http.addHeader("User-Agent", "esphome-nextion-uploader");
+    http.addHeader("Accept-Encoding", "identity");
+    return true;
+  };
+
+  auto is_https = [&](const String &url) -> bool {
+    return url.startsWith("https://");
+  };
+
+  // ---- probe file size: HEAD -> GET Range 0-0 fallback ----
+  uint32_t total_size = 0;
+  {
+    HTTPClient http;
+    std::unique_ptr<Client> client;
+    if (is_https(this->tft_url_.c_str())) {
+      auto *sec = new WiFiClientSecure();
+      sec->setInsecure(); // bez CA
+      client.reset(sec);
+    } else {
+      client.reset(new WiFiClient());
+    }
+
+    if (begin_http(http, *client, this->tft_url_.c_str())) {
+      int code = http.sendRequest("HEAD");
+      if (code > 0 && (code == 200 || code == 206)) {
+        int len = http.getSize();  // z Content-Length (HEAD to většinou vrací)
+        if (len > 0) total_size = (uint32_t) len;
+      } else {
+        ESP_LOGW(TAG, "HEAD failed/status=%d, falling back to GET Range 0-0", code);
+      }
+      http.end();
+    } else {
+      ESP_LOGW(TAG, "HTTP begin(HEAD) failed, fallback to GET Range 0-0");
+    }
+
+    if (total_size == 0) {
+      if (begin_http(http, *client, this->tft_url_.c_str())) {
+        http.addHeader("Range", "bytes=0-0");
+        int code = http.GET();
+        if (code > 0 && (code == 206 || code == 200)) {
+          String cr = http.header("Content-Range"); // "bytes 0-0/NNN"
+          if (cr.length() > 0) {
+            int slash = cr.lastIndexOf('/');
+            if (slash > 0 && slash + 1 < cr.length()) {
+              total_size = (uint32_t) strtoul(cr.c_str() + slash + 1, nullptr, 10);
+            }
+          }
+          if (total_size == 0) {
+            int len = http.getSize(); // fallback
+            if (len > 0) total_size = (uint32_t) len;
+          }
+        } else {
+          ESP_LOGE(TAG, "GET Range 0-0 failed/status=%d", code);
+        }
+        http.end();
+      } else {
+        ESP_LOGE(TAG, "HTTP begin(GET Range) failed");
+      }
+    }
+  }
+
+  if (total_size < 4096 || total_size > 134217728) {
+    ESP_LOGE(TAG, "File size out of range or unknown (size=%" PRIu32 ")", total_size);
+    // restore baud
+    uint32_t cur = this->uart_parent_->get_baud_rate();
+    if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+    this->is_updating_ = false; this->upload_in_progress_ = false;
+    return false;
+  }
+  this->tft_size_ = total_size;
+  this->content_length_ = total_size;
+  ESP_LOGD(TAG, "TFT file size: %" PRIu32 " B", this->tft_size_);
+
+  // ---- prepare Nextion (baud) ----
+  static const uint32_t SUPPORTED[] = {2400,4800,9600,19200,31250,38400,57600,115200,230400,250000,256000,512000,921600};
+  uint32_t desired_baud = 921600;
+  bool ok_baud = false; for (auto b : SUPPORTED) if (b == desired_baud) { ok_baud = true; break; }
+  if (!ok_baud) desired_baud = this->original_baud_rate_;
+  if (!prepare_nextion_for_upload(desired_baud)) {
+    ESP_LOGE(TAG, "Nextion not ready for upload");
+    // restore baud
+    uint32_t cur = this->uart_parent_->get_baud_rate();
+    if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+    this->is_updating_ = false; this->upload_in_progress_ = false;
+    return false;
+  }
+
+  // ---- ranged download & stream to UART ----
+  uint8_t *buffer = (uint8_t*) malloc(4096);
+  if (!buffer) {
+    ESP_LOGE(TAG, "Failed to allocate upload buffer");
+    // restore baud
+    uint32_t cur = this->uart_parent_->get_baud_rate();
+    if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+    this->is_updating_ = false; this->upload_in_progress_ = false;
+    return false;
+  }
+
+  uint32_t range_start = 0;
+  this->upload_first_chunk_sent_ = false;
+
+  while (this->content_length_ > 0 && range_start < this->tft_size_) {
+    const uint32_t block = 4096u;
+    uint32_t range_end = range_start + block - 1;
+    if (range_end >= this->tft_size_) range_end = this->tft_size_ - 1;
+
+    // nový HTTP request pro daný Range
+    HTTPClient http;
+    std::unique_ptr<Client> client;
+    if (is_https(this->tft_url_.c_str())) {
+      auto *sec = new WiFiClientSecure();
+      sec->setInsecure();
+      client.reset(sec);
+    } else {
+      client.reset(new WiFiClient());
+    }
+
+    if (!begin_http(http, *client, this->tft_url_.c_str())) {
+      ESP_LOGE(TAG, "HTTP begin(download) failed");
+      free(buffer);
+      // restore baud
+      uint32_t cur = this->uart_parent_->get_baud_rate();
+      if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+      this->is_updating_ = false; this->upload_in_progress_ = false;
+      return false;
+    }
+
+    char range_header[48];
+    snprintf(range_header, sizeof(range_header), "bytes=%" PRIu32 "-%" PRIu32, range_start, range_end);
+    http.addHeader("Range", range_header);
+
+    int code = http.GET();
+    if (code <= 0 || (code != 206 && code != 200)) {
+      ESP_LOGE(TAG, "HTTP GET range failed/status=%d", code);
+      http.end();
+      free(buffer);
+      // restore baud
+      uint32_t cur = this->uart_parent_->get_baud_rate();
+      if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+      this->is_updating_ = false; this->upload_in_progress_ = false;
+      return false;
+    }
+
+    WiFiClient *stream = http.getStreamPtr();
+    uint32_t remain = (code == 206) ? (range_end - range_start + 1) : this->tft_size_;
+    while (remain > 0) {
+      App.feed_wdt();
+      uint16_t want = (remain > 4096u) ? 4096u : (uint16_t) remain;
+      size_t read_len = stream->readBytes((char*)buffer, want);
+      if (read_len != want) {
+        ESP_LOGE(TAG, "Short read: %u of %u", (unsigned)read_len, (unsigned)want);
+        http.end();
+        free(buffer);
+        // restore baud
+        uint32_t cur = this->uart_parent_->get_baud_rate();
+        if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+        this->is_updating_ = false; this->upload_in_progress_ = false;
+        return false;
+      }
+
+      // stream do Nextionu
+      size_t sent = 0;
+      while (sent < read_len) {
+        size_t n = read_len - sent;
+        if (n > NX_STREAM_CHUNK) n = NX_STREAM_CHUNK;
+        this->uart_parent_->write_array(buffer + sent, n);
+        sent += n;
+        yield();
+      }
+
+      remain -= read_len;
+      this->content_length_ -= read_len;
+    }
+
+    http.end();
+
+    // ACK (0x05 OK / 0x08 resume)
+    std::string ack;
+    wait_for_ack(this->upload_first_chunk_sent_ ? 500 : 5000, ack);
+    this->upload_first_chunk_sent_ = true;
+
+    if (!ack.empty()) {
+      const uint8_t *ab = reinterpret_cast<const uint8_t*>(ack.data());
+      if (ab[0] == 0x08 && ack.size() >= 5) {
+        uint32_t resume = 0;
+        for (int j = 0; j < 4; ++j) resume |= ((uint32_t)ab[j + 1]) << (8 * j);
+        ESP_LOGI(TAG, "Nextion requested resume at %" PRIu32, resume);
+        if (resume > this->tft_size_) {
+          ESP_LOGE(TAG, "Resume offset beyond EOF");
+          free(buffer);
+          // restore baud
+          uint32_t cur = this->uart_parent_->get_baud_rate();
+          if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+          this->is_updating_ = false; this->upload_in_progress_ = false;
+          return false;
+        }
+        this->content_length_ = this->tft_size_ - resume;
+        range_start = resume;
+        continue; // začne další Range od požadovaného offsetu
+      } else if (ab[0] != 0x05 && ab[0] != 0x08) {
+        ESP_LOGE(TAG, "Invalid ACK: [%s]",
+                 format_hex_pretty(reinterpret_cast<const uint8_t*>(ack.data()), ack.size()).c_str());
+        free(buffer);
+        // restore baud
+        uint32_t cur = this->uart_parent_->get_baud_rate();
+        if (cur != this->original_baud_rate_) { this->uart_parent_->set_baud_rate(this->original_baud_rate_); this->uart_parent_->load_settings(); }
+        this->is_updating_ = false; this->upload_in_progress_ = false;
+        return false;
+      }
+    }
+
+    // další blok
+    range_start = range_end + 1;
+
+    // progress log
+#if defined(BOARD_HAS_PSRAM) || defined(USE_PSRAM)
+    ESP_LOGD(TAG, "Uploaded %0.2f%%, remaining %" PRIu32 " B, free heap: %" PRIu32 " (PSRAM unknown here)",
+             100.0f * (this->tft_size_ - this->content_length_) / this->tft_size_,
+             this->content_length_, (uint32_t)ESP.getFreeHeap());
+#else
+    ESP_LOGD(TAG, "Uploaded %0.2f%%, remaining %" PRIu32 " B, free heap: %" PRIu32,
+             100.0f * (this->tft_size_ - this->content_length_) / this->tft_size_,
+             this->content_length_, (uint32_t)ESP.getFreeHeap());
+#endif
+  }
+
+  free(buffer);
+
+  ESP_LOGI(TAG, "TFT upload successful (Arduino)");
+
+  // restore baud
+  {
+    uint32_t cur = this->uart_parent_->get_baud_rate();
+    if (cur != this->original_baud_rate_) {
+      ESP_LOGD(TAG, "Restoring baud %" PRIu32 " -> %" PRIu32, cur, this->original_baud_rate_);
+      this->uart_parent_->set_baud_rate(this->original_baud_rate_);
+      this->uart_parent_->load_settings();
+    }
+  }
+
+  // disable replies & return to write-only
+  this->send_command_printf("bkcmd=0"); this->bkcmd_ = 0;
+  this->enter_writeonly_mode_();
+
+  this->is_updating_ = false;
   this->upload_in_progress_ = false;
-  return false;
+
+  delay(1500);
+  arch_restart();
+  return true;
 }
+
+#endif // !USE_ESP_IDF
+
 
 // ========= ESP-IDF implementation =========
 #if defined(USE_ESP_IDF)
