@@ -447,9 +447,9 @@ int NextionSimple::upload_by_chunks_idf_(void *http_client_v, uint32_t &range_st
     return -1;
   }
 
-  int hdr = esp_http_client_fetch_headers(http);
-  if (hdr < 0) {
-    ESP_LOGE(TAG, "fetch_headers failed: %s", esp_err_to_name((esp_err_t)hdr));
+  esp_err_t fh = esp_http_client_fetch_headers(http);
+  if (fh != ESP_OK) {
+    ESP_LOGE(TAG, "fetch_headers failed: %s", esp_err_to_name(fh));
     esp_http_client_close(http);
     return -1;
   }
@@ -640,10 +640,10 @@ bool NextionSimple::upload_tft_esp_idf_() {
     if (err == ESP_OK) {
       int status = esp_http_client_get_status_code(probe);
       char cr_buf[96] = {0};
-      int cr_len = esp_http_client_get_header(probe, "Content-Range", cr_buf, sizeof(cr_buf));
-      if (status == 206 && cr_len > 0) {
-        const char *slash = strrchr(cr_buf, '/'); // "bytes 0-0/NNN"
-        if (slash && slash[1]) total_size = (uint32_t) strtoul(slash+1, nullptr, 10);
+      char *cr = nullptr;
+      if (esp_http_client_get_header(probe, "Content-Range", &cr) == ESP_OK && cr) {
+        const char *slash = strrchr(cr, '/');
+        if (slash && slash[1]) total_size = (uint32_t) strtoul(slash + 1, nullptr, 10);
       }
       if (total_size == 0) {
         long long cl = esp_http_client_get_content_length(probe);
