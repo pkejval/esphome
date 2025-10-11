@@ -20,6 +20,7 @@ CONF_MIN_INTERVAL = "min_interval"
 CONF_PPR = "pulses_per_revolution"
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
+CONF_REVS = "revolutions"
 
 CONFIG_SCHEMA = sensor.sensor_schema(
     unit_of_measurement="lpm",
@@ -33,15 +34,9 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_GLITCH_FILTER, default="0us"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_MIN_INTERVAL, default="0us"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
-        cv.Optional(CONF_TOTAL): sensor.sensor_schema(
-            icon=ICON_PULSE,
-            accuracy_decimals=0,
-        ),
-        cv.Optional(CONF_PPS): sensor.sensor_schema(
-            unit_of_measurement="pps",
-            icon=ICON_PULSE,
-            accuracy_decimals=2,
-        ),
+        cv.Optional(CONF_TOTAL): sensor.sensor_schema(icon=ICON_PULSE, accuracy_decimals=0),
+        cv.Optional(CONF_PPS): sensor.sensor_schema(unit_of_measurement="pps", icon=ICON_PULSE, accuracy_decimals=2),
+        cv.Optional(CONF_REVS): sensor.sensor_schema(unit_of_measurement="rev", icon=ICON_PULSE, accuracy_decimals=0),
     }
 )
 
@@ -53,20 +48,23 @@ async def to_code(config):
     pin = await cg.gpio_pin_expression(config[CONF_PIN])
     cg.add(var.set_pin(pin))
     cg.add(var.set_count_mode(config[CONF_COUNT_MODE]))
-
     cg.add(var.set_glitch_filter_us(config[CONF_GLITCH_FILTER].total_microseconds))
     cg.add(var.set_min_interval_us(config[CONF_MIN_INTERVAL].total_microseconds))
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
 
     publish_total = CONF_TOTAL in config
     publish_pps = CONF_PPS in config
+    publish_revs = CONF_REVS in config
     cg.add(var.set_publish_total(publish_total))
     cg.add(var.set_publish_pps(publish_pps))
+    cg.add(var.set_publish_revolutions(publish_revs))
 
     if publish_total:
         s_total = await sensor.new_sensor(config[CONF_TOTAL])
         cg.add(var.set_total_sensor(s_total))
-
     if publish_pps:
         s_pps = await sensor.new_sensor(config[CONF_PPS])
         cg.add(var.set_pps_sensor(s_pps))
+    if publish_revs:
+        s_revs = await sensor.new_sensor(config[CONF_REVS])
+        cg.add(var.set_revolutions_sensor(s_revs))

@@ -13,10 +13,7 @@ namespace hw_pulse_meter {
 static const char *const TAG = "hw_pulse_meter";
 
 void HWPulseMeter::setup() {
-  if (pin_ == nullptr) {
-    this->mark_failed();
-    return;
-  }
+  if (pin_ == nullptr) { this->mark_failed(); return; }
 
   pin_->setup();
   const auto pin_num = pin_->get_pin();
@@ -27,29 +24,21 @@ void HWPulseMeter::setup() {
                           : (count_mode_ == RISING ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE));
 
   static bool isr_svc_installed = false;
-  if (!isr_svc_installed) {
-    gpio_install_isr_service(0);
-    isr_svc_installed = true;
-  }
+  if (!isr_svc_installed) { gpio_install_isr_service(0); isr_svc_installed = true; }
   gpio_isr_handler_add((gpio_num_t) pin_num, &HWPulseMeter::gpio_isr_trampoline, this);
 
-  if (!this->init_pcnt_()) {
-    this->mark_failed();
-    return;
-  }
+  if (!this->init_pcnt_()) { this->mark_failed(); return; }
   this->configure_pcnt_glitch_filter_();
 
   last_edge_us_ = 0;
   last_pub_us_ = 0;
   cumulative_total_ = 0;
   last_published_total_ = 0;
+  last_revolutions_pub_ = 0;
 
   int32_t start_raw = 0;
-  if (this->read_pcnt_total_(start_raw)) {
-    last_pcnt_total_raw_ = start_raw;
-  } else {
-    last_pcnt_total_raw_ = 0;
-  }
+  if (this->read_pcnt_total_(start_raw)) last_pcnt_total_raw_ = start_raw;
+  else last_pcnt_total_raw_ = 0;
 }
 
 bool HWPulseMeter::init_pcnt_() {
@@ -91,7 +80,6 @@ void HWPulseMeter::configure_pcnt_glitch_filter_() {
 
   pcnt_glitch_filter_config_t gf{};
   gf.max_glitch_ns = (uint32_t)((uint64_t) glitch_filter_us_ * 1000ULL);
-
   (void) pcnt_unit_set_glitch_filter(unit_h, &gf);
 }
 
@@ -118,8 +106,14 @@ void HWPulseMeter::loop() {
   last_pcnt_total_raw_ = total_now_raw;
   cumulative_total_ += static_cast<uint32_t>(delta_u16);
 
-  if (publish_total_ && total_sensor_) {
-    total_sensor_->publish_state(static_cast<float>(cumulative_total_));
+  if (publish_total_ && total_sensor_) total_sensor_->publish_state(static_cast<float>(cumulative_total_));
+
+  if (publish_revolutions_ && revolutions_sensor_) {
+    const uint64_t revs_now = cumulative_total_ / pulses_per_revolution_;
+    if (revs_now != last_revolutions_pub_) {
+      last_revolutions_pub_ = revs_now;
+      revolutions_sensor_->publish_state(static_cast<float>(revs_now));
+    }
   }
 
   const uint64_t since_pub = cumulative_total_ - last_published_total_;
@@ -139,17 +133,17 @@ void HWPulseMeter::loop() {
 }
 
 void HWPulseMeter::dump_config() {
-  ESP_LOGCONFIG(TAG, "HW Pulse Meter");
+  ESP_LOGCONFIG(TAG, "HW Pulse Meter (pulse_cnt)");
   if (pin_) ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", pin_->get_pin());
   ESP_LOGCONFIG(TAG, "  Count mode: %s",
-                count_mode_ == RISING ? "RISING"
-                                      : (count_mode_ == FALLING ? "FALLING" : "BOTH"));
+                count_mode_ == RISING ? "RISING" : (count_mode_ == FALLING ? "FALLING" : "BOTH"));
   ESP_LOGCONFIG(TAG, "  Glitch filter: %u us", (unsigned) glitch_filter_us_);
   ESP_LOGCONFIG(TAG, "  Min interval: %u us", (unsigned) min_interval_us_);
   ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) pulses_per_revolution_);
-  ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s",
+  ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s",
                 publish_total_ ? "yes" : "no",
-                publish_pps_ ? "yes" : "no");
+                publish_pps_ ? "yes" : "no",
+                publish_revolutions_ ? "yes" : "no");
 }
 
 }  // namespace hw_pulse_meter
