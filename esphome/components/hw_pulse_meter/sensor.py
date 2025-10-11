@@ -1,6 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import sensor
+from esphome.components import sensor, gpio
 from esphome.const import (
     CONF_ID,
     CONF_PIN,
@@ -31,7 +31,7 @@ CONFIG_SCHEMA = sensor.sensor_schema(
 ).extend(
     {
         cv.GenerateID(): cv.declare_id(HWPulseMeter),
-        cv.Required(CONF_PIN): cv.internal_gpio_input_pin_schema,
+        cv.Required(CONF_PIN): cv.All(gpio.gpio_input_pin_schema),
         cv.Optional(CONF_COUNT_MODE, default="RISING"): cv.enum(COUNT_MODE, upper=True),
         cv.Optional(CONF_GLITCH_FILTER, default="0us"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_MIN_INTERVAL, default="0us"): cv.positive_time_period_microseconds,
