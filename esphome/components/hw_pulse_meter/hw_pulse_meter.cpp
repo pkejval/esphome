@@ -1,7 +1,14 @@
 #include "hw_pulse_meter.h"
 
 #ifdef USE_ESP32
+
 #include "esphome/core/log.h"
+
+// <<< Import nového driveru pouze v .cpp, aby se nebil s legacy pcnt.h v jiných TU >>>
+#include <driver/pulse_cnt.h>
+#include <driver/gpio.h>
+#include <esp_timer.h>
+#include <limits.h>
 
 namespace esphome {
 namespace hw_pulse_meter {
@@ -16,7 +23,7 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // Respektuj YAML pin nastavení (input/pull/inverted)
+  // Respektuj YAML (input/pull/inverted)
   pin_->setup();
   const auto pin_num = pin_->get_pin();
 
@@ -52,32 +59,38 @@ void HWPulseMeter::setup() {
 }
 
 bool HWPulseMeter::init_pcnt_() {
-  // 1) Vytvoř UNIT
-  pcnt_unit_config_t unit_cfg = {
-      .high_limit = INT16_MAX,   // široké limity, nechceme eventy z limitů
-      .low_limit  = INT16_MIN,
-  };
-  if (pcnt_new_unit(&unit_cfg, &unit_) != ESP_OK || unit_ == nullptr) {
-    return false;
-  }
+  // 1) Vytvoř unit
+  pcnt_unit_config_t unit_cfg{};
+  // U nového driveru je pořadí polí low_limit, high_limit (vyplníme explicitně, bez designátorů):
+  unit_cfg.low_limit  = INT16_MIN;
+  unit_cfg.high_limit = INT16_MAX;
 
-  // 2) Vytvoř CHANNEL
-  const int gpio_num = (int) pin_->get_pin();
-  pcnt_channel_config_t ch_cfg = {
-      .edge_gpio_num  = gpio_num,
-      .level_gpio_num = -1,  // nepoužíváme dir/ctrl pin
-      // Defaultní akce, přepíšeme níže dle count_mode_
-      .pos_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD,
-      .neg_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD,
-      .level_action    = PCNT_CHANNEL_LEVEL_ACTION_KEEP,
-  };
-  if (pcnt_new_channel(unit_, &ch_cfg, &channel_) != ESP_OK || channel_ == nullptr) {
+  pcnt_unit_handle_t unit_h = nullptr;
+  if (pcnt_new_unit(&unit_cfg, &unit_h) != ESP_OK || unit_h == nullptr) {
     return false;
   }
+  this->unit_ = unit_h;
+
+  // 2) Vytvoř channel
+  const int gpio_num = (int) pin_->get_pin();
+
+  pcnt_chan_config_t ch_cfg{};
+  ch_cfg.edge_gpio_num  = gpio_num;
+  ch_cfg.level_gpio_num = -1; // nepoužíváme dir/ctrl pin
+  // default actions; přepíšeme níže:
+  ch_cfg.pos_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  ch_cfg.neg_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  ch_cfg.level_action    = PCNT_CHANNEL_LEVEL_ACTION_KEEP;
+
+  pcnt_channel_handle_t ch_h = nullptr;
+  if (pcnt_new_channel(unit_h, &ch_cfg, &ch_h) != ESP_OK || ch_h == nullptr) {
+    return false;
+  }
+  this->channel_ = ch_h;
 
   // 3) Nastav akce podle režimu
-  pcnt_channel_edge_action_t pos_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
-  pcnt_channel_edge_action_t neg_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  pcnt_chan_edge_action_t pos_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  pcnt_chan_edge_action_t neg_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
   switch (count_mode_) {
     case RISING:
       pos_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
@@ -92,34 +105,38 @@ bool HWPulseMeter::init_pcnt_() {
       neg_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
       break;
   }
-  if (pcnt_channel_set_edge_action(channel_, pos_act, neg_act) != ESP_OK) {
+  if (pcnt_channel_set_edge_action(ch_h, pos_act, neg_act) != ESP_OK) {
     return false;
   }
-  // level_action už je KEEP; ponecháme
+  // level_action zůstává KEEP
 
-  // 4) Povolit, vynulovat a spustit
-  if (pcnt_unit_enable(unit_) != ESP_OK) return false;
-  if (pcnt_unit_clear_count(unit_) != ESP_OK) return false;
-  if (pcnt_unit_start(unit_) != ESP_OK) return false;
+  // 4) Enable/Clear/Start
+  if (pcnt_unit_enable(unit_h) != ESP_OK) return false;
+  if (pcnt_unit_clear_count(unit_h) != ESP_OK) return false;
+  if (pcnt_unit_start(unit_h) != ESP_OK) return false;
 
   return true;
 }
 
 void HWPulseMeter::configure_pcnt_glitch_filter_() {
-  // nový ovladač bere přímo ns, 0 = vypnuto
-  pcnt_glitch_filter_config_t gf = {
-      .max_glitch_ns = (uint32_t)((uint64_t) glitch_filter_us_ * 1000ULL),
-  };
-  // Pro jednoduchost: pokud 0, driver to chápe jako vypnuté
-  esp_err_t err = pcnt_unit_set_glitch_filter(unit_, &gf);
+  pcnt_unit_handle_t unit_h = reinterpret_cast<pcnt_unit_handle_t>(this->unit_);
+  if (unit_h == nullptr) return;
+
+  pcnt_glitch_filter_config_t gf{};
+  // nový driver bere přímo ns; 0 = vypnuto
+  gf.max_glitch_ns = (uint32_t)((uint64_t) glitch_filter_us_ * 1000ULL);
+
+  esp_err_t err = pcnt_unit_set_glitch_filter(unit_h, &gf);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "Failed to set glitch filter (err=%d)", (int) err);
   }
 }
 
 bool HWPulseMeter::read_pcnt_total_(int32_t &out) {
+  pcnt_unit_handle_t unit_h = reinterpret_cast<pcnt_unit_handle_t>(this->unit_);
+  if (unit_h == nullptr) return false;
   int value = 0;
-  if (pcnt_unit_get_count(unit_, &value) != ESP_OK) return false;
+  if (pcnt_unit_get_count(unit_h, &value) != ESP_OK) return false;
   out = (int32_t) value;
   return true;
 }
@@ -138,10 +155,10 @@ void HWPulseMeter::loop() {
   if (delta_pulses <= 0) return;
   last_pcnt_total_ = total_now;
 
-  // Publikace total (podsenzor)
+  // Publish TOTAL podsenzor (kumulativně)
   if (publish_total_ && total_sensor_) total_sensor_->publish_state((float) total_now);
 
-  // Publish teprve po celé otáčce (násobek PPR)
+  // Publish až po celé otáčce (násobek PPR)
   if ((total_now - last_published_total_) < (int32_t) pulses_per_revolution_) return;
 
   const uint64_t now_us = esp_timer_get_time();
@@ -164,7 +181,7 @@ void HWPulseMeter::loop() {
 }
 
 void HWPulseMeter::dump_config() {
-  ESP_LOGCONFIG(TAG, "HW Pulse Meter (LPM primary, pulse_cnt driver):");
+  ESP_LOGCONFIG(TAG, "HW Pulse Meter (LPM primary, pulse_cnt driver; legacy-safe header):");
   if (pin_) ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", pin_->get_pin());
   ESP_LOGCONFIG(TAG, "  Count mode: %s",
                 count_mode_ == RISING ? "RISING" :
