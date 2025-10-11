@@ -125,7 +125,9 @@ void HWPulseMeter::loop() {
     if (dt_s > 0.0f) {
       const float pps = float(since_pub) / dt_s;
       if (publish_pps_ && pps_sensor_) pps_sensor_->publish_state(pps);
-      this->publish_state(pps * 60.0f);
+
+      const float rps = (float(since_pub) / (float) pulses_per_revolution_) / dt_s;
+      this->publish_state(rps * 60.0f);
     }
   }
   last_pub_us_ = now_us;
