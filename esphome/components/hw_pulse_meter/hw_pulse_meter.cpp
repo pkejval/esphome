@@ -4,10 +4,9 @@
 
 #include "esphome/core/log.h"
 
-// <<< Import nového driveru pouze v .cpp, aby se nebil s legacy pcnt.h v jiných TU >>>
+// nový driver importujeme pouze tady, aby se nebil s legacy pcnt.h v jiných TU
 #include <driver/pulse_cnt.h>
 #include <driver/gpio.h>
-#include <esp_timer.h>
 #include <limits.h>
 
 namespace esphome {
@@ -61,7 +60,7 @@ void HWPulseMeter::setup() {
 bool HWPulseMeter::init_pcnt_() {
   // 1) Vytvoř unit
   pcnt_unit_config_t unit_cfg{};
-  // U nového driveru je pořadí polí low_limit, high_limit (vyplníme explicitně, bez designátorů):
+  // pořadí polí v novém driveru: low_limit, high_limit
   unit_cfg.low_limit  = INT16_MIN;
   unit_cfg.high_limit = INT16_MAX;
 
@@ -77,10 +76,7 @@ bool HWPulseMeter::init_pcnt_() {
   pcnt_chan_config_t ch_cfg{};
   ch_cfg.edge_gpio_num  = gpio_num;
   ch_cfg.level_gpio_num = -1; // nepoužíváme dir/ctrl pin
-  // default actions; přepíšeme níže:
-  ch_cfg.pos_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD;
-  ch_cfg.neg_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD;
-  ch_cfg.level_action    = PCNT_CHANNEL_LEVEL_ACTION_KEEP;
+  // (edge/level actions se nastavují až funkcí, nejsou součástí config structu)
 
   pcnt_channel_handle_t ch_h = nullptr;
   if (pcnt_new_channel(unit_h, &ch_cfg, &ch_h) != ESP_OK || ch_h == nullptr) {
@@ -89,8 +85,8 @@ bool HWPulseMeter::init_pcnt_() {
   this->channel_ = ch_h;
 
   // 3) Nastav akce podle režimu
-  pcnt_chan_edge_action_t pos_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
-  pcnt_chan_edge_action_t neg_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  pcnt_channel_edge_action_t pos_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  pcnt_channel_edge_action_t neg_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
   switch (count_mode_) {
     case RISING:
       pos_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
@@ -108,7 +104,7 @@ bool HWPulseMeter::init_pcnt_() {
   if (pcnt_channel_set_edge_action(ch_h, pos_act, neg_act) != ESP_OK) {
     return false;
   }
-  // level_action zůstává KEEP
+  // level_action ponecháme KEEP (výchozí)
 
   // 4) Enable/Clear/Start
   if (pcnt_unit_enable(unit_h) != ESP_OK) return false;

@@ -7,6 +7,7 @@
 #ifdef USE_ESP32
 
 #include <stdint.h>
+#include <esp_timer.h>  // kvůli esp_timer_get_time() použitému v inline ISR
 
 namespace esphome {
 namespace hw_pulse_meter {
@@ -70,7 +71,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   uint32_t pulses_per_revolution_{1};
 
   // Stav
-  void *unit_{nullptr};    // pcnt_unit_handle_t (opaque, kvůli konfliktu s legacy pcnt.h)
+  void *unit_{nullptr};    // pcnt_unit_handle_t (opaque, kvůli konfliktům s legacy pcnt)
   void *channel_{nullptr}; // pcnt_channel_handle_t (opaque)
   volatile bool edge_flag_{false};
   uint64_t last_edge_us_{0};
