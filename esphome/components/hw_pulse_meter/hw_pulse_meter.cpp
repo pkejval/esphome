@@ -9,20 +9,22 @@ namespace hw_pulse_meter {
 static const char *const TAG = "hw_pulse_meter";
 
 void HWPulseMeter::setup() {
-  ESP_LOGI(TAG, "Setting up HW Pulse Meter (PCNT + GPIO ISR)...");
+  ESP_LOGI(TAG, "Setting up HW Pulse Meter (pulse_cnt + GPIO ISR)...");
   if (pin_ == nullptr) {
     ESP_LOGE(TAG, "No pin configured");
-    mark_failed();
+    this->mark_failed();
     return;
   }
 
+  // Respektuj YAML pin nastavení (input/pull/inverted)
   pin_->setup();
-  auto pin_num = pin_->get_pin();
+  const auto pin_num = pin_->get_pin();
 
+  // ISR typ podle režimu
   gpio_set_intr_type(
       (gpio_num_t) pin_num,
-      count_mode_ == CountMode::BOTH ? GPIO_INTR_ANYEDGE
-                                     : (count_mode_ == CountMode::RISING ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE));
+      count_mode_ == BOTH ? GPIO_INTR_ANYEDGE
+                          : (count_mode_ == RISING ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE));
 
   static bool isr_svc_installed = false;
   if (!isr_svc_installed) {
@@ -31,81 +33,94 @@ void HWPulseMeter::setup() {
   }
   gpio_isr_handler_add((gpio_num_t) pin_num, &HWPulseMeter::gpio_isr_trampoline, this);
 
-  if (!init_pcnt_()) {
-    ESP_LOGE(TAG, "PCNT init failed");
-    mark_failed();
+  if (!this->init_pcnt_()) {
+    ESP_LOGE(TAG, "pulse_cnt init failed");
+    this->mark_failed();
     return;
   }
-  configure_pcnt_glitch_filter_();
+  this->configure_pcnt_glitch_filter_();
 
   last_edge_us_ = 0;
   last_pub_us_ = 0;
   last_published_total_ = 0;
 
   int32_t start_total = 0;
-  read_pcnt_total_(start_total);
+  this->read_pcnt_total_(start_total);
   last_pcnt_total_ = start_total;
 
-  ESP_LOGI(TAG, "Ready on GPIO %d (unit %d), PPR=%u", pin_num, pcnt_unit_, pulses_per_revolution_);
+  ESP_LOGI(TAG, "Pulse counter unit created on GPIO %d, PPR=%u", pin_num, pulses_per_revolution_);
 }
 
 bool HWPulseMeter::init_pcnt_() {
-#if defined(PCNT_UNIT_MAX)
-  const int UNIT_MAX = PCNT_UNIT_MAX;
-#else
-  const int UNIT_MAX = 8;
-#endif
-
-  for (int unit = 0; unit < UNIT_MAX; unit++) {
-    pcnt_config_t cfg{};
-    cfg.pulse_gpio_num = (int) pin_->get_pin();
-    cfg.ctrl_gpio_num = PCNT_PIN_NOT_USED;
-
-    switch (count_mode_) {
-      case CountMode::RISING:
-        cfg.pos_mode = PCNT_COUNT_INC;
-        cfg.neg_mode = PCNT_COUNT_DIS;
-        break;
-      case CountMode::FALLING:
-        cfg.pos_mode = PCNT_COUNT_DIS;
-        cfg.neg_mode = PCNT_COUNT_INC;
-        break;
-      case CountMode::BOTH:
-        cfg.pos_mode = PCNT_COUNT_INC;
-        cfg.neg_mode = PCNT_COUNT_INC;
-        break;
-    }
-    cfg.lctrl_mode = PCNT_MODE_KEEP;
-    cfg.hctrl_mode = PCNT_MODE_KEEP;
-    cfg.unit = (pcnt_unit_t) unit;
-    cfg.channel = PCNT_CHANNEL_0;
-
-    if (pcnt_unit_config(&cfg) == ESP_OK) {
-      pcnt_unit_ = unit;
-      pcnt_counter_clear((pcnt_unit_t) pcnt_unit_);
-      pcnt_counter_resume((pcnt_unit_t) pcnt_unit_);
-      return true;
-    }
+  // 1) Vytvoř UNIT
+  pcnt_unit_config_t unit_cfg = {
+      .high_limit = INT16_MAX,   // široké limity, nechceme eventy z limitů
+      .low_limit  = INT16_MIN,
+  };
+  if (pcnt_new_unit(&unit_cfg, &unit_) != ESP_OK || unit_ == nullptr) {
+    return false;
   }
-  return false;
+
+  // 2) Vytvoř CHANNEL
+  const int gpio_num = (int) pin_->get_pin();
+  pcnt_channel_config_t ch_cfg = {
+      .edge_gpio_num  = gpio_num,
+      .level_gpio_num = -1,  // nepoužíváme dir/ctrl pin
+      // Defaultní akce, přepíšeme níže dle count_mode_
+      .pos_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD,
+      .neg_edge_action = PCNT_CHANNEL_EDGE_ACTION_HOLD,
+      .level_action    = PCNT_CHANNEL_LEVEL_ACTION_KEEP,
+  };
+  if (pcnt_new_channel(unit_, &ch_cfg, &channel_) != ESP_OK || channel_ == nullptr) {
+    return false;
+  }
+
+  // 3) Nastav akce podle režimu
+  pcnt_channel_edge_action_t pos_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  pcnt_channel_edge_action_t neg_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  switch (count_mode_) {
+    case RISING:
+      pos_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+      neg_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+      break;
+    case FALLING:
+      pos_act = PCNT_CHANNEL_EDGE_ACTION_HOLD;
+      neg_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+      break;
+    case BOTH:
+      pos_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+      neg_act = PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+      break;
+  }
+  if (pcnt_channel_set_edge_action(channel_, pos_act, neg_act) != ESP_OK) {
+    return false;
+  }
+  // level_action už je KEEP; ponecháme
+
+  // 4) Povolit, vynulovat a spustit
+  if (pcnt_unit_enable(unit_) != ESP_OK) return false;
+  if (pcnt_unit_clear_count(unit_) != ESP_OK) return false;
+  if (pcnt_unit_start(unit_) != ESP_OK) return false;
+
+  return true;
 }
 
 void HWPulseMeter::configure_pcnt_glitch_filter_() {
-  if (glitch_filter_us_ == 0) {
-    pcnt_filter_disable((pcnt_unit_t) pcnt_unit_);
-    return;
+  // nový ovladač bere přímo ns, 0 = vypnuto
+  pcnt_glitch_filter_config_t gf = {
+      .max_glitch_ns = (uint32_t)((uint64_t) glitch_filter_us_ * 1000ULL),
+  };
+  // Pro jednoduchost: pokud 0, driver to chápe jako vypnuté
+  esp_err_t err = pcnt_unit_set_glitch_filter(unit_, &gf);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to set glitch filter (err=%d)", (int) err);
   }
-  uint64_t ticks64 = (uint64_t) glitch_filter_us_ * 80ULL;
-  if (ticks64 > 1023ULL) ticks64 = 1023ULL;
-  uint16_t ticks = (uint16_t) ticks64;
-  pcnt_set_filter_value((pcnt_unit_t) pcnt_unit_, ticks);
-  pcnt_filter_enable((pcnt_unit_t) pcnt_unit_);
 }
 
 bool HWPulseMeter::read_pcnt_total_(int32_t &out) {
-  int16_t cnt = 0;
-  if (pcnt_get_counter_value((pcnt_unit_t) pcnt_unit_, &cnt) != ESP_OK) return false;
-  out = (int32_t) cnt;
+  int value = 0;
+  if (pcnt_unit_get_count(unit_, &value) != ESP_OK) return false;
+  out = (int32_t) value;
   return true;
 }
 
@@ -114,47 +129,56 @@ void HWPulseMeter::loop() {
   edge_flag_ = false;
 
   int32_t total_now = 0;
-  if (!read_pcnt_total_(total_now)) return;
+  if (!this->read_pcnt_total_(total_now)) {
+    ESP_LOGW(TAG, "pulse_cnt read failed");
+    return;
+  }
 
   int32_t delta_pulses = total_now - last_pcnt_total_;
   if (delta_pulses <= 0) return;
   last_pcnt_total_ = total_now;
 
-  // Publikace total
+  // Publikace total (podsenzor)
   if (publish_total_ && total_sensor_) total_sensor_->publish_state((float) total_now);
 
-  // Publikace až po dokončení celé otáčky
+  // Publish teprve po celé otáčce (násobek PPR)
   if ((total_now - last_published_total_) < (int32_t) pulses_per_revolution_) return;
 
-  const uint64_t now = esp_timer_get_time();
-  const int32_t delta_ppr = total_now - last_published_total_;
+  const uint64_t now_us = esp_timer_get_time();
+  const int32_t delta_since_pub = total_now - last_published_total_;
   last_published_total_ = total_now;
 
   float pps = NAN;
-  if (last_pub_us_ != 0 && delta_ppr > 0) {
-    const float dt = (float)(now - last_pub_us_) / 1e6f;
-    if (dt > 0.0f) {
-      pps = (float) delta_ppr / dt;
-    }
+  if (last_pub_us_ != 0 && delta_since_pub > 0) {
+    const float dt_s = (float) (now_us - last_pub_us_) / 1e6f;
+    if (dt_s > 0.0f) pps = (float) delta_since_pub / dt_s;
   }
-  last_pub_us_ = now;
+  last_pub_us_ = now_us;
 
   if (publish_pps_ && pps_sensor_ && !std::isnan(pps)) pps_sensor_->publish_state(pps);
 
-  if (!std::isnan(pps)) this->publish_state(pps * 60.0f);  // hlavní LPM
+  if (!std::isnan(pps)) {
+    // Hlavní senzor = LPM
+    this->publish_state(pps * 60.0f);
+  }
 }
 
 void HWPulseMeter::dump_config() {
-  ESP_LOGCONFIG(TAG, "HW Pulse Meter (LPM primary):");
+  ESP_LOGCONFIG(TAG, "HW Pulse Meter (LPM primary, pulse_cnt driver):");
   if (pin_) ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", pin_->get_pin());
   ESP_LOGCONFIG(TAG, "  Count mode: %s",
-                count_mode_ == CountMode::RISING ? "RISING" :
-                (count_mode_ == CountMode::FALLING ? "FALLING" : "BOTH"));
-  ESP_LOGCONFIG(TAG, "  Glitch filter: %u us (max ~13us)", (unsigned) glitch_filter_us_);
-  ESP_LOGCONFIG(TAG, "  Min interval: %u us", (unsigned) min_interval_us_);
-  ESP_LOGCONFIG(TAG, "  Pulses per revolution: %u", (unsigned) pulses_per_revolution_);
+                count_mode_ == RISING ? "RISING" :
+                (count_mode_ == FALLING ? "FALLING" : "BOTH"));
+  ESP_LOGCONFIG(TAG, "  Glitch filter (HW): %u us (~%u ns)",
+                (unsigned) glitch_filter_us_, (unsigned) (glitch_filter_us_ * 1000u));
+  ESP_LOGCONFIG(TAG, "  Min interval (soft): %u us", (unsigned) min_interval_us_);
+  ESP_LOGCONFIG(TAG, "  Pulses per revolution (PPR): %u", (unsigned) pulses_per_revolution_);
+  ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s",
+                publish_total_ ? "yes" : "no",
+                publish_pps_ ? "yes" : "no");
 }
 
 }  // namespace hw_pulse_meter
 }  // namespace esphome
-#endif
+
+#endif  // USE_ESP32

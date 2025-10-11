@@ -6,13 +6,13 @@ from esphome.const import (
     CONF_PIN,
     ICON_PULSE,
 )
-from esphome import pins  # správné schema pro GPIO pin
+from esphome import pins  # schéma pro GPIO pin
 
 # Namespace & třídy z C++
 hw_pulse_meter_ns = cg.esphome_ns.namespace("hw_pulse_meter")
 HWPulseMeter = hw_pulse_meter_ns.class_("HWPulseMeter", sensor.Sensor, cg.Component)
 
-# Enum pro režim počítání hran
+# Enum pro režim počítání hran (neskopovaný, kvůli YAML codegenu)
 CountMode = hw_pulse_meter_ns.enum("CountMode")
 COUNT_MODE = {
     "RISING": CountMode.RISING,
@@ -22,15 +22,15 @@ COUNT_MODE = {
 
 # YAML klíče
 CONF_COUNT_MODE = "count_mode"
-CONF_GLITCH_FILTER = "glitch_filter"         # time period (us/ms/s… -> µs)
-CONF_MIN_INTERVAL = "min_interval"           # time period (us/ms/s… -> µs)
+CONF_GLITCH_FILTER = "glitch_filter"         # time period -> µs
+CONF_MIN_INTERVAL = "min_interval"           # time period -> µs
 CONF_PPR = "pulses_per_revolution"           # integer >= 1
 
 # Volitelné podsenzory
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
 
-# Hlavní senzor = LPM (pulzy za minutu / otáčky za minutu)
+# Hlavní senzor = LPM
 CONFIG_SCHEMA = sensor.sensor_schema(
     unit_of_measurement="lpm",
     icon=ICON_PULSE,
@@ -39,10 +39,9 @@ CONFIG_SCHEMA = sensor.sensor_schema(
     {
         cv.GenerateID(): cv.declare_id(HWPulseMeter),
 
-        # Standardní deklarace vstupního pinu (number/mode/inverted)
+        # Standardní deklarace vstupního pinu
         cv.Required(CONF_PIN): pins.gpio_input_pin_schema,
 
-        # Režim počítání hran
         cv.Optional(CONF_COUNT_MODE, default="RISING"): cv.enum(COUNT_MODE, upper=True),
 
         # Časové periody (ESPHome konverze na mikrosekundy)
@@ -53,11 +52,11 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
 
         # Volitelné podsenzory
-        cv.Optional(CONF_TOTAL): sensor.sensor_schema(  # total pulses
+        cv.Optional(CONF_TOTAL): sensor.sensor_schema(
             icon=ICON_PULSE,
             accuracy_decimals=0,
         ),
-        cv.Optional(CONF_PPS): sensor.sensor_schema(    # pulses per second
+        cv.Optional(CONF_PPS): sensor.sensor_schema(
             unit_of_measurement="pps",
             icon=ICON_PULSE,
             accuracy_decimals=2,
@@ -81,7 +80,7 @@ async def to_code(config):
     cg.add(var.set_glitch_filter_us(config[CONF_GLITCH_FILTER].total_microseconds))
     cg.add(var.set_min_interval_us(config[CONF_MIN_INTERVAL].total_microseconds))
 
-    # PPR (runtime lze měnit přes id(...).set_pulses_per_revolution(x))
+    # PPR
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
 
     # Podsenzory – vytvoř a předej do C++
