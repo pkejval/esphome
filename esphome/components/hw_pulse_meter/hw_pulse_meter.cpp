@@ -4,7 +4,6 @@
 
 #include "esphome/core/log.h"
 #include <driver/pulse_cnt.h>
-#include <driver/gpio.h>
 #include <limits.h>
 
 namespace esphome {
@@ -16,21 +15,11 @@ void HWPulseMeter::setup() {
   if (pin_ == nullptr) { this->mark_failed(); return; }
 
   pin_->setup();
-  const auto pin_num = pin_->get_pin();
-
-  gpio_set_intr_type(
-      (gpio_num_t) pin_num,
-      count_mode_ == BOTH ? GPIO_INTR_ANYEDGE
-                          : (count_mode_ == RISING ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE));
-
-  static bool isr_svc_installed = false;
-  if (!isr_svc_installed) { gpio_install_isr_service(0); isr_svc_installed = true; }
-  gpio_isr_handler_add((gpio_num_t) pin_num, &HWPulseMeter::gpio_isr_trampoline, this);
 
   if (!this->init_pcnt_()) { this->mark_failed(); return; }
-  this->configure_pcnt_glitch_filter_();
+  this->configure_pcnt_internal_filter_();
 
-  last_edge_us_ = 0;
+  last_change_us_ = 0;
   last_pub_us_ = 0;
   cumulative_total_ = 0;
   last_published_total_ = 0;
@@ -75,12 +64,14 @@ bool HWPulseMeter::init_pcnt_() {
   return true;
 }
 
-void HWPulseMeter::configure_pcnt_glitch_filter_() {
+void HWPulseMeter::configure_pcnt_internal_filter_() {
   pcnt_unit_handle_t unit_h = reinterpret_cast<pcnt_unit_handle_t>(this->unit_);
   if (unit_h == nullptr) return;
 
+  uint32_t clamped_us = internal_filter_us_;
+  if (clamped_us > 13) clamped_us = 13;
   pcnt_glitch_filter_config_t gf{};
-  gf.max_glitch_ns = (uint32_t)((uint64_t) glitch_filter_us_ * 1000ULL);
+  gf.max_glitch_ns = (uint32_t)((uint64_t) clamped_us * 1000ULL);
   (void) pcnt_unit_set_glitch_filter(unit_h, &gf);
 }
 
@@ -94,10 +85,10 @@ bool HWPulseMeter::read_pcnt_total_(int32_t &out) {
 }
 
 void HWPulseMeter::loop() {
-  // jednorázový publish 0 po nečinnosti; neovlivňuje total/revolutions
-  if (idle_timeout_us_ > 0 && last_edge_us_ != 0) {
-    const uint64_t now_us = esp_timer_get_time();
-    if (!edge_flag_ && (now_us - last_edge_us_) >= idle_timeout_us_ && !idle_zero_published_) {
+  const uint64_t now_us = esp_timer_get_time();
+
+  if (idle_timeout_us_ > 0 && last_change_us_ != 0) {
+    if ((now_us - last_change_us_) >= idle_timeout_us_ && !idle_zero_published_) {
       if (publish_pps_ && pps_sensor_) pps_sensor_->publish_state(0.0f);
       this->publish_state(0.0f);
       idle_zero_published_ = true;
@@ -105,9 +96,6 @@ void HWPulseMeter::loop() {
       last_published_total_ = cumulative_total_;
     }
   }
-
-  if (!edge_flag_) return;
-  edge_flag_ = false;
 
   int32_t total_now_raw = 0;
   if (!this->read_pcnt_total_(total_now_raw)) return;
@@ -119,6 +107,7 @@ void HWPulseMeter::loop() {
   last_pcnt_total_raw_ = total_now_raw;
   cumulative_total_ += static_cast<uint32_t>(delta_u16);
   idle_zero_published_ = false;
+  last_change_us_ = now_us;
 
   if (publish_total_ && total_sensor_) total_sensor_->publish_state(static_cast<float>(cumulative_total_));
 
@@ -133,7 +122,6 @@ void HWPulseMeter::loop() {
   const uint64_t since_pub = cumulative_total_ - last_published_total_;
   if (since_pub < pulses_per_revolution_) return;
 
-  const uint64_t now_us = esp_timer_get_time();
   if (last_pub_us_ != 0) {
     const float dt_s = float(now_us - last_pub_us_) / 1e6f;
     if (dt_s > 0.0f) {
@@ -144,6 +132,7 @@ void HWPulseMeter::loop() {
       this->publish_state(rps * 60.0f);
     }
   }
+
   last_pub_us_ = now_us;
   last_published_total_ = cumulative_total_;
 }
@@ -153,8 +142,7 @@ void HWPulseMeter::dump_config() {
   if (pin_) ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", pin_->get_pin());
   ESP_LOGCONFIG(TAG, "  Count mode: %s",
                 count_mode_ == RISING ? "RISING" : (count_mode_ == FALLING ? "FALLING" : "BOTH"));
-  ESP_LOGCONFIG(TAG, "  Glitch filter: %u us", (unsigned) glitch_filter_us_);
-  ESP_LOGCONFIG(TAG, "  Min interval: %u us", (unsigned) min_interval_us_);
+  ESP_LOGCONFIG(TAG, "  Internal filter: %u us", (unsigned) internal_filter_us_);
   ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) idle_timeout_us_);
   ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) pulses_per_revolution_);
   ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s",

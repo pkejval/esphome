@@ -1,4 +1,3 @@
-# esphome/components/hw_pulse_meter/sensor.py
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
@@ -12,13 +11,18 @@ CountMode = hw_pulse_meter_ns.enum("CountMode")
 COUNT_MODE = {"RISING": CountMode.RISING, "FALLING": CountMode.FALLING, "BOTH": CountMode.BOTH}
 
 CONF_COUNT_MODE = "count_mode"
-CONF_GLITCH_FILTER = "glitch_filter"
-CONF_MIN_INTERVAL = "min_interval"
+CONF_INTERNAL_FILTER = "internal_filter"
 CONF_TIMEOUT = "timeout"
 CONF_PPR = "pulses_per_revolution"
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
 CONF_REVS = "revolutions"
+
+def _validate_internal_filter(v):
+    t = cv.positive_time_period_microseconds(v)
+    if t.total_microseconds > 13:
+        raise cv.Invalid("internal_filter must be <= 13us on ESP32 PCNT")
+    return t
 
 CONFIG_SCHEMA = sensor.sensor_schema(
     icon=ICON_PULSE,
@@ -27,9 +31,8 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.GenerateID(): cv.declare_id(HWPulseMeter),
         cv.Required(CONF_PIN): pins.gpio_input_pin_schema,
         cv.Optional(CONF_COUNT_MODE, default="RISING"): cv.enum(COUNT_MODE, upper=True),
-        cv.Optional(CONF_GLITCH_FILTER, default="0us"): cv.positive_time_period_microseconds,
-        cv.Optional(CONF_MIN_INTERVAL, default="0us"): cv.positive_time_period_microseconds,
-        cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,  # 0 = off
+        cv.Optional(CONF_INTERNAL_FILTER, default="13us"): _validate_internal_filter,
+        cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
         cv.Optional(CONF_TOTAL): sensor.sensor_schema(accuracy_decimals=0),
         cv.Optional(CONF_PPS): sensor.sensor_schema(unit_of_measurement="pps", accuracy_decimals=2),
@@ -45,9 +48,8 @@ async def to_code(config):
     pin = await cg.gpio_pin_expression(config[CONF_PIN])
     cg.add(var.set_pin(pin))
     cg.add(var.set_count_mode(config[CONF_COUNT_MODE]))
-    cg.add(var.set_glitch_filter_us(config[CONF_GLITCH_FILTER].total_microseconds))
-    cg.add(var.set_min_interval_us(config[CONF_MIN_INTERVAL].total_microseconds))
-    cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))  # backend setter
+    cg.add(var.set_internal_filter_us(config[CONF_INTERNAL_FILTER].total_microseconds))
+    cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
 
     publish_total = CONF_TOTAL in config

@@ -22,8 +22,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
  public:
   void set_pin(InternalGPIOPin *pin) { pin_ = pin; }
   void set_count_mode(CountMode m) { count_mode_ = m; }
-  void set_glitch_filter_us(uint32_t us) { glitch_filter_us_ = us; }
-  void set_min_interval_us(uint32_t us) { min_interval_us_ = us; }
+  void set_internal_filter_us(uint32_t us) { internal_filter_us_ = us; }
   void set_pulses_per_revolution(uint32_t ppr) { pulses_per_revolution_ = ppr == 0 ? 1u : ppr; }
 
   void set_publish_total(bool v) { publish_total_ = v; }
@@ -42,30 +41,19 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
  protected:
-  static void IRAM_ATTR gpio_isr_trampoline(void *arg) {
-    reinterpret_cast<HWPulseMeter *>(arg)->on_edge_isr_();
-  }
-  inline void IRAM_ATTR on_edge_isr_() {
-    const uint64_t now = esp_timer_get_time();  // us
-    if (min_interval_us_ > 0 && (now - last_edge_us_) < min_interval_us_) return;
-    last_edge_us_ = now;
-    edge_flag_ = true;
-  }
-
   bool init_pcnt_();
-  void configure_pcnt_glitch_filter_();
+  void configure_pcnt_internal_filter_();
   bool read_pcnt_total_(int32_t &out);
 
   InternalGPIOPin *pin_{nullptr};
   CountMode count_mode_{RISING};
-  uint32_t glitch_filter_us_{0};
-  uint32_t min_interval_us_{0};
+  uint32_t internal_filter_us_{13};
   uint32_t pulses_per_revolution_{1};
 
   void *unit_{nullptr};
   void *channel_{nullptr};
-  volatile bool edge_flag_{false};
-  uint64_t last_edge_us_{0};
+
+  uint64_t last_change_us_{0};
   uint64_t last_pub_us_{0};
   int32_t last_pcnt_total_raw_{0};
   uint64_t cumulative_total_{0};
