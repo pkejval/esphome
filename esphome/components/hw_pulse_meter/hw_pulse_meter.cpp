@@ -35,6 +35,7 @@ void HWPulseMeter::setup() {
   cumulative_total_ = 0;
   last_published_total_ = 0;
   last_revolutions_pub_ = 0;
+  idle_zero_published_ = false;
 
   int32_t start_raw = 0;
   if (this->read_pcnt_total_(start_raw)) last_pcnt_total_raw_ = start_raw;
@@ -93,6 +94,18 @@ bool HWPulseMeter::read_pcnt_total_(int32_t &out) {
 }
 
 void HWPulseMeter::loop() {
+  // jednorázový publish 0 po nečinnosti; neovlivňuje total/revolutions
+  if (idle_timeout_us_ > 0 && last_edge_us_ != 0) {
+    const uint64_t now_us = esp_timer_get_time();
+    if (!edge_flag_ && (now_us - last_edge_us_) >= idle_timeout_us_ && !idle_zero_published_) {
+      if (publish_pps_ && pps_sensor_) pps_sensor_->publish_state(0.0f);
+      this->publish_state(0.0f);
+      idle_zero_published_ = true;
+      last_pub_us_ = now_us;
+      last_published_total_ = cumulative_total_;
+    }
+  }
+
   if (!edge_flag_) return;
   edge_flag_ = false;
 
@@ -105,6 +118,7 @@ void HWPulseMeter::loop() {
 
   last_pcnt_total_raw_ = total_now_raw;
   cumulative_total_ += static_cast<uint32_t>(delta_u16);
+  idle_zero_published_ = false;
 
   if (publish_total_ && total_sensor_) total_sensor_->publish_state(static_cast<float>(cumulative_total_));
 
@@ -141,6 +155,7 @@ void HWPulseMeter::dump_config() {
                 count_mode_ == RISING ? "RISING" : (count_mode_ == FALLING ? "FALLING" : "BOTH"));
   ESP_LOGCONFIG(TAG, "  Glitch filter: %u us", (unsigned) glitch_filter_us_);
   ESP_LOGCONFIG(TAG, "  Min interval: %u us", (unsigned) min_interval_us_);
+  ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) idle_timeout_us_);
   ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) pulses_per_revolution_);
   ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s",
                 publish_total_ ? "yes" : "no",

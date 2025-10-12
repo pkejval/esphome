@@ -32,6 +32,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   void set_total_sensor(sensor::Sensor *s) { total_sensor_ = s; }
   void set_pps_sensor(sensor::Sensor *s) { pps_sensor_ = s; }
   void set_revolutions_sensor(sensor::Sensor *s) { revolutions_sensor_ = s; }
+  void set_idle_timeout_us(uint32_t us) { idle_timeout_us_ = us; }
 
   uint32_t get_pulses_per_revolution() const { return pulses_per_revolution_; }
 
@@ -70,7 +71,8 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   uint64_t cumulative_total_{0};
   uint64_t last_published_total_{0};
   uint64_t last_revolutions_pub_{0};
-
+  uint32_t idle_timeout_us_{0};
+  bool idle_zero_published_{false};
   bool publish_total_{false}, publish_pps_{false}, publish_revolutions_{false};
   sensor::Sensor *total_sensor_{nullptr};
   sensor::Sensor *pps_sensor_{nullptr};
