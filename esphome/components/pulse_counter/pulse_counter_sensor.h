@@ -5,6 +5,7 @@
 #include "esphome/components/sensor/sensor.h"
 
 #include <cinttypes>
+#include <memory>
 
 #if defined(USE_ESP32)
 #include <driver/pulse_cnt.h>
@@ -23,10 +24,11 @@ enum PulseCounterCountMode {
 using pulse_counter_t = int32_t;
 
 struct PulseCounterStorageBase {
+  virtual ~PulseCounterStorageBase() = default;
   virtual bool pulse_counter_setup(InternalGPIOPin *pin) = 0;
   virtual pulse_counter_t read_raw_value() = 0;
 
-  InternalGPIOPin *pin;
+  InternalGPIOPin *pin{nullptr};
   PulseCounterCountMode rising_edge_mode{PULSE_COUNTER_INCREMENT};
   PulseCounterCountMode falling_edge_mode{PULSE_COUNTER_DISABLE};
   uint32_t filter_us{0};
@@ -38,6 +40,7 @@ struct BasicPulseCounterStorage : public PulseCounterStorageBase {
 
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;
+  ~BasicPulseCounterStorage() override;
 
   volatile pulse_counter_t counter{0};
   volatile uint32_t last_pulse{0};
@@ -49,22 +52,23 @@ struct BasicPulseCounterStorage : public PulseCounterStorageBase {
 struct HwPulseCounterStorage : public PulseCounterStorageBase {
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;
+  ~HwPulseCounterStorage() override;
 
   pcnt_unit_handle_t unit{nullptr};
   pcnt_channel_handle_t channel{nullptr};
 };
 #endif
 
-PulseCounterStorageBase *get_storage(bool hw_pcnt = false);
+std::unique_ptr<PulseCounterStorageBase> get_storage(bool hw_pcnt = false);
 
 class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
  public:
-  explicit PulseCounterSensor(bool hw_pcnt = false) : storage_(*get_storage(hw_pcnt)) {}
+  explicit PulseCounterSensor(bool hw_pcnt = false) : storage_(get_storage(hw_pcnt)) {}
 
   void set_pin(InternalGPIOPin *pin) { pin_ = pin; }
-  void set_rising_edge_mode(PulseCounterCountMode mode) { storage_.rising_edge_mode = mode; }
-  void set_falling_edge_mode(PulseCounterCountMode mode) { storage_.falling_edge_mode = mode; }
-  void set_filter_us(uint32_t filter) { storage_.filter_us = filter; }
+  void set_rising_edge_mode(PulseCounterCountMode mode) { storage_->rising_edge_mode = mode; }
+  void set_falling_edge_mode(PulseCounterCountMode mode) { storage_->falling_edge_mode = mode; }
+  void set_filter_us(uint32_t filter) { storage_->filter_us = filter; }
   void set_total_sensor(sensor::Sensor *total_sensor) { total_sensor_ = total_sensor; }
 
   void set_total_pulses(uint32_t pulses);
@@ -74,8 +78,8 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   void dump_config() override;
 
  protected:
-  InternalGPIOPin *pin_;
-  PulseCounterStorageBase &storage_;
+  InternalGPIOPin *pin_{nullptr};
+  std::unique_ptr<PulseCounterStorageBase> storage_;
   uint64_t last_time_us_{0};
   uint32_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};

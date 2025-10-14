@@ -22,12 +22,13 @@ static inline uint64_t now_us() {
 }
 
 #ifdef HAS_PCNT
-PulseCounterStorageBase *get_storage(bool hw_pcnt) {
-  return (hw_pcnt ? (PulseCounterStorageBase *) (new HwPulseCounterStorage)
-                  : (PulseCounterStorageBase *) (new BasicPulseCounterStorage));
+std::unique_ptr<PulseCounterStorageBase> get_storage(bool hw_pcnt) {
+  if (hw_pcnt)
+    return std::make_unique<HwPulseCounterStorage>();
+  return std::make_unique<BasicPulseCounterStorage>();
 }
 #else
-PulseCounterStorageBase *get_storage(bool) { return new BasicPulseCounterStorage; }
+std::unique_ptr<PulseCounterStorageBase> get_storage(bool) { return std::make_unique<BasicPulseCounterStorage>(); }
 #endif
 
 void IRAM_ATTR BasicPulseCounterStorage::gpio_intr(BasicPulseCounterStorage *arg) {
@@ -65,6 +66,12 @@ pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
   pulse_counter_t ret = counter - this->last_value;
   this->last_value = counter;
   return ret;
+}
+
+BasicPulseCounterStorage::~BasicPulseCounterStorage() {
+  if (this->pin != nullptr) {
+    this->pin->detach_interrupt();
+  }
 }
 
 #ifdef HAS_PCNT
@@ -159,10 +166,24 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   pulse_counter_t ret = static_cast<pulse_counter_t>(value);
   return ret;
 }
+
+HwPulseCounterStorage::~HwPulseCounterStorage() {
+  if (this->unit != nullptr) {
+    pcnt_unit_stop(this->unit);
+  }
+  if (this->channel != nullptr) {
+    pcnt_del_channel(this->channel);
+    this->channel = nullptr;
+  }
+  if (this->unit != nullptr) {
+    pcnt_del_unit(this->unit);
+    this->unit = nullptr;
+  }
+}
 #endif
 
 void PulseCounterSensor::setup() {
-  if (!this->storage_.pulse_counter_setup(this->pin_)) {
+  if (!this->storage_->pulse_counter_setup(this->pin_)) {
     this->mark_failed();
     return;
   }
@@ -170,7 +191,8 @@ void PulseCounterSensor::setup() {
 
 void PulseCounterSensor::set_total_pulses(uint32_t pulses) {
   this->current_total_ = pulses;
-  this->total_sensor_->publish_state(pulses);
+  if (this->total_sensor_ != nullptr)
+    this->total_sensor_->publish_state(pulses);
 }
 
 void PulseCounterSensor::dump_config() {
@@ -180,13 +202,13 @@ void PulseCounterSensor::dump_config() {
                 "  Rising Edge: %s\n"
                 "  Falling Edge: %s\n"
                 "  Filtering pulses shorter than %" PRIu32 " µs",
-                EDGE_MODE_TO_STRING[this->storage_.rising_edge_mode],
-                EDGE_MODE_TO_STRING[this->storage_.falling_edge_mode], this->storage_.filter_us);
+                EDGE_MODE_TO_STRING[this->storage_->rising_edge_mode],
+                EDGE_MODE_TO_STRING[this->storage_->falling_edge_mode], this->storage_->filter_us);
   LOG_UPDATE_INTERVAL(this);
 }
 
 void PulseCounterSensor::update() {
-  pulse_counter_t raw = this->storage_.read_raw_value();
+  pulse_counter_t raw = this->storage_->read_raw_value();
   uint64_t now = now_us();
   if (this->last_time_us_ != 0) {
     uint64_t interval_us = now - this->last_time_us_;
