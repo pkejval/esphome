@@ -139,9 +139,12 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
-  pulse_counter_t counter = static_cast<pulse_counter_t>(value);
-  pulse_counter_t ret = counter - this->last_value;
-  this->last_value = counter;
+  err = pcnt_unit_clear_count(this->unit);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
+    return 0;
+  }
+  pulse_counter_t ret = static_cast<pulse_counter_t>(value);
   return ret;
 }
 #endif

@@ -20,11 +20,7 @@ enum PulseCounterCountMode {
   PULSE_COUNTER_DECREMENT,
 };
 
-#ifdef HAS_PCNT
-using pulse_counter_t = int16_t;
-#else
 using pulse_counter_t = int32_t;
-#endif
 
 struct PulseCounterStorageBase {
   virtual bool pulse_counter_setup(InternalGPIOPin *pin) = 0;
