@@ -4,6 +4,14 @@
 
 #if defined(USE_ESP32)
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
+static portMUX_TYPE s_pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
+#define ENTER_CRITICAL() portENTER_CRITICAL(&s_pcnt_mux)
+#define EXIT_CRITICAL() portEXIT_CRITICAL(&s_pcnt_mux)
+#else
+#define ENTER_CRITICAL() noInterrupts()
+#define EXIT_CRITICAL() interrupts()
 #endif
 
 namespace esphome {
@@ -42,14 +50,12 @@ void IRAM_ATTR BasicPulseCounterStorage::gpio_intr(BasicPulseCounterStorage *arg
   switch (mode) {
     case PULSE_COUNTER_DISABLE:
       break;
-    case PULSE_COUNTER_INCREMENT: {
-      auto x = arg->counter + 1;
-      arg->counter = x;
-    } break;
-    case PULSE_COUNTER_DECREMENT: {
-      auto x = arg->counter - 1;
-      arg->counter = x;
-    } break;
+    case PULSE_COUNTER_INCREMENT:
+      arg->counter = arg->counter + 1;
+      break;
+    case PULSE_COUNTER_DECREMENT:
+      arg->counter = arg->counter - 1;
+      break;
   }
 }
 
@@ -58,13 +64,18 @@ bool BasicPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin->setup();
   this->isr_pin = this->pin->to_isr();
   this->pin->attach_interrupt(BasicPulseCounterStorage::gpio_intr, this, gpio::INTERRUPT_ANY_EDGE);
+  this->last_value = 0;
+  this->counter = 0;
   return true;
 }
 
 pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
-  pulse_counter_t counter = this->counter;
-  pulse_counter_t ret = counter - this->last_value;
-  this->last_value = counter;
+  pulse_counter_t current;
+  ENTER_CRITICAL();
+  current = this->counter;
+  pulse_counter_t ret = current - this->last_value;
+  this->last_value = current;
+  EXIT_CRITICAL();
   return ret;
 }
 
@@ -142,6 +153,8 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
     return false;
   }
+
+  this->last_value = 0;
   err = pcnt_unit_start(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Starting PCNT unit failed: %s", esp_err_to_name(err));
@@ -158,13 +171,18 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
-  err = pcnt_unit_clear_count(this->unit);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
-    return 0;
-  }
-  pulse_counter_t ret = static_cast<pulse_counter_t>(value);
-  return ret;
+
+  const int16_t curr = static_cast<int16_t>(value);
+  const int16_t prev = static_cast<int16_t>(this->last_value);
+  int32_t diff = static_cast<int32_t>(curr) - static_cast<int32_t>(prev);
+
+  if (diff > 32767)
+    diff -= 65536;
+  else if (diff < -32768)
+    diff += 65536;
+
+  this->last_value = static_cast<pulse_counter_t>(curr);
+  return static_cast<pulse_counter_t>(diff);
 }
 
 HwPulseCounterStorage::~HwPulseCounterStorage() {
@@ -208,14 +226,14 @@ void PulseCounterSensor::dump_config() {
 }
 
 void PulseCounterSensor::update() {
-  pulse_counter_t raw = this->storage_->read_raw_value();
-  uint64_t now = now_us();
+  const pulse_counter_t raw = this->storage_->read_raw_value();
+  const uint64_t now = now_us();
   if (this->last_time_us_ != 0) {
-    uint64_t interval_us = now - this->last_time_us_;
+    const uint64_t interval_us = now - this->last_time_us_;
     if (interval_us > 0) {
-      float value = (60000000.0f * raw) / static_cast<float>(interval_us);
-      ESP_LOGD(TAG, "'%s': Retrieved counter: %0.2f pulses/min", this->get_name().c_str(), value);
-      this->publish_state(value);
+      const double value_ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(interval_us);
+      ESP_LOGD(TAG, "'%s': Retrieved counter: %.6f pulses/min", this->get_name().c_str(), value_ppm);
+      this->publish_state(static_cast<float>(value_ppm));
     }
   }
 
