@@ -208,9 +208,9 @@ void PulseCounterSensor::setup() {
 }
 
 void PulseCounterSensor::set_total_pulses(uint32_t pulses) {
-  this->current_total_ = pulses;
+  this->current_total_ = static_cast<uint64_t>(pulses);
   if (this->total_sensor_ != nullptr)
-    this->total_sensor_->publish_state(pulses);
+    this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
 }
 
 void PulseCounterSensor::dump_config() {
@@ -219,7 +219,8 @@ void PulseCounterSensor::dump_config() {
   ESP_LOGCONFIG(TAG,
                 "  Rising Edge: %s\n"
                 "  Falling Edge: %s\n"
-                "  Filtering pulses shorter than %" PRIu32 " µs",
+                "  Filtering pulses shorter than %" PRIu32 " µs\n"
+                "  Total counter mode: monotonic (increments only)",
                 EDGE_MODE_TO_STRING[this->storage_->rising_edge_mode],
                 EDGE_MODE_TO_STRING[this->storage_->falling_edge_mode], this->storage_->filter_us);
   LOG_UPDATE_INTERVAL(this);
@@ -237,11 +238,21 @@ void PulseCounterSensor::update() {
     }
   }
 
+  // Increment total counter (monotonic)
   if (this->total_sensor_ != nullptr) {
-    current_total_ += raw;
-    ESP_LOGD(TAG, "'%s': Total : %" PRIu32 " pulses", this->get_name().c_str(), current_total_);
-    this->total_sensor_->publish_state(current_total_);
+    if (raw > 0) {
+      this->current_total_ += static_cast<uint64_t>(raw);
+      this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+      ESP_LOGD(TAG, "'%s': Total +%" PRIi32 " -> %" PRIu64 " pulses", this->get_name().c_str(), raw,
+               this->current_total_);
+    } else if (raw < 0) {
+      // Ignore to compatibility with STATE_CLASS_TOTAL_INCREASING
+      ESP_LOGV(TAG, "'%s': Negative delta (%" PRIi32 ") ignored for total (monotonic).", this->get_name().c_str(), raw);
+    } else {
+      // raw == 0
+    }
   }
+
   this->last_time_us_ = now;
 }
 
