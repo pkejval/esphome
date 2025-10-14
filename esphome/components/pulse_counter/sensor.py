@@ -45,20 +45,8 @@ def validate_internal_filter(value):
     use_pcnt = value.get(CONF_USE_PCNT)
     if CORE.is_esp8266 and use_pcnt:
         raise cv.Invalid(
-            "Using hardware PCNT is only available on ESP32",
-            [CONF_USE_PCNT],
+            "Using hardware PCNT is only available on ESP32", [CONF_USE_PCNT]
         )
-
-    if (
-        CORE.is_esp32
-        and use_pcnt
-        and value.get(CONF_INTERNAL_FILTER).total_microseconds > 13
-    ):
-        raise cv.Invalid(
-            "Maximum internal filter value when using ESP32 hardware PCNT is 13us",
-            [CONF_INTERNAL_FILTER],
-        )
-
     return value
 
 
@@ -76,8 +64,7 @@ def validate_count_mode(value):
     falling_edge = value[CONF_FALLING_EDGE]
     if rising_edge == "DISABLE" and falling_edge == "DISABLE":
         raise cv.Invalid(
-            "Can't set both count modes to DISABLE! This means no counting occurs at "
-            "all!"
+            "Can't set both count modes to DISABLE! This means no counting occurs at all!"
         )
     return value
 
@@ -110,7 +97,7 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.SplitDefault(CONF_USE_PCNT, esp32=True): cv.boolean,
             cv.Optional(
-                CONF_INTERNAL_FILTER, default="13us"
+                CONF_INTERNAL_FILTER, default="0us"
             ): cv.positive_time_period_microseconds,
             cv.Optional(CONF_TOTAL): sensor.sensor_schema(
                 unit_of_measurement=UNIT_PULSES,
