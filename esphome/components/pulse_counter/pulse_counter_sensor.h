@@ -76,7 +76,7 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
  protected:
   InternalGPIOPin *pin_;
   PulseCounterStorageBase &storage_;
-  uint32_t last_time_{0};
+  uint64_t last_time_us_{0};
   uint32_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};
 };

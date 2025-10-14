@@ -2,12 +2,24 @@
 #include "esphome/core/log.h"
 #include <limits>
 
+#if defined(USE_ESP32)
+#include <esp_timer.h>
+#endif
+
 namespace esphome {
 namespace pulse_counter {
 
 static const char *const TAG = "pulse_counter";
 
 const char *const EDGE_MODE_TO_STRING[] = {"DISABLE", "INCREMENT", "DECREMENT"};
+
+static inline uint64_t now_us() {
+#if defined(USE_ESP32)
+  return static_cast<uint64_t>(esp_timer_get_time());
+#else
+  return static_cast<uint64_t>(micros());
+#endif
+}
 
 #ifdef HAS_PCNT
 PulseCounterStorageBase *get_storage(bool hw_pcnt) {
@@ -175,12 +187,14 @@ void PulseCounterSensor::dump_config() {
 
 void PulseCounterSensor::update() {
   pulse_counter_t raw = this->storage_.read_raw_value();
-  uint32_t now = millis();
-  if (this->last_time_ != 0) {
-    uint32_t interval = now - this->last_time_;
-    float value = (60000.0f * raw) / float(interval);
-    ESP_LOGD(TAG, "'%s': Retrieved counter: %0.2f pulses/min", this->get_name().c_str(), value);
-    this->publish_state(value);
+  uint64_t now = now_us();
+  if (this->last_time_us_ != 0) {
+    uint64_t interval_us = now - this->last_time_us_;
+    if (interval_us > 0) {
+      float value = (60000000.0f * raw) / static_cast<float>(interval_us);
+      ESP_LOGD(TAG, "'%s': Retrieved counter: %0.2f pulses/min", this->get_name().c_str(), value);
+      this->publish_state(value);
+    }
   }
 
   if (this->total_sensor_ != nullptr) {
@@ -188,7 +202,7 @@ void PulseCounterSensor::update() {
     ESP_LOGD(TAG, "'%s': Total : %" PRIu32 " pulses", this->get_name().c_str(), current_total_);
     this->total_sensor_->publish_state(current_total_);
   }
-  this->last_time_ = now;
+  this->last_time_us_ = now;
 }
 
 }  // namespace pulse_counter
