@@ -5,14 +5,8 @@
 
 #if defined(USE_ESP32)
 #include <esp_timer.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/portmacro.h>
-static portMUX_TYPE s_pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
-#define ENTER_CRITICAL() portENTER_CRITICAL(&s_pcnt_mux)
-#define EXIT_CRITICAL() portEXIT_CRITICAL(&s_pcnt_mux)
 #else
-#define ENTER_CRITICAL() noInterrupts()
-#define EXIT_CRITICAL() interrupts()
+// pro Basic režim níže používáme noInterrupts/interrupts makra v HALu
 #endif
 
 namespace esphome {
@@ -72,11 +66,11 @@ bool BasicPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
 
 pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
   pulse_counter_t current;
-  ENTER_CRITICAL();
+  noInterrupts();
   current = this->counter;
   pulse_counter_t ret = current - this->last_value;
   this->last_value = current;
-  EXIT_CRITICAL();
+  interrupts();
   return ret;
 }
 
@@ -98,23 +92,12 @@ static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
   }
 }
 
-// Watch-point callback – sčítá wrapy
-bool IRAM_ATTR HwPulseCounterStorage::on_reach_cb(pcnt_unit_handle_t, const pcnt_watch_event_data_t *edata,
-                                                  void *user_ctx) {
-  auto *self = static_cast<HwPulseCounterStorage *>(user_ctx);
-  if (edata->watch_point_value == self->high_watch_) {
-    self->hw_wraps_ += 1;
-  } else if (edata->watch_point_value == self->low_watch_) {
-    self->hw_wraps_ -= 1;
-  }
-  return true;
-}
-
 bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin = pin;
   this->pin->setup();
 
   pcnt_unit_config_t unit_cfg = {};
+  // Standardní limity (signed 16b): -32768 .. 32767
   unit_cfg.low_limit = std::numeric_limits<int16_t>::min();
   unit_cfg.high_limit = std::numeric_limits<int16_t>::max();
   esp_err_t err = pcnt_new_unit(&unit_cfg, &this->unit);
@@ -156,23 +139,6 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     }
   }
 
-  err = pcnt_unit_add_watch_point(this->unit, this->high_watch_);
-  if (err == ESP_OK)
-    err = pcnt_unit_add_watch_point(this->unit, this->low_watch_);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Adding watch points failed: %s", esp_err_to_name(err));
-    return false;
-  }
-
-  pcnt_event_callbacks_t cbs = {};
-  cbs.on_reach = &HwPulseCounterStorage::on_reach_cb;
-  err = pcnt_unit_register_event_callbacks(this->unit, &cbs, this);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Register event callbacks failed: %s", esp_err_to_name(err));
-    return false;
-  }
-  this->cb_registered_ = true;
-
   err = pcnt_unit_enable(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Enabling PCNT unit failed: %s", esp_err_to_name(err));
@@ -184,9 +150,8 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     return false;
   }
 
-  this->last_value = 0;
-  this->hw_wraps_ = 0;
-  this->last_ext_ = 0;
+  this->last_count16_ = 0;
+  this->first_read_ = true;
 
   err = pcnt_unit_start(this->unit);
   if (err != ESP_OK) {
@@ -197,32 +162,35 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   return true;
 }
 
+// Nejbližší rozvinutí 16bit rozdílu (mod 65536) → delta ∈ (-32768, 32768]
+static inline int32_t unwrap16_nearest(int16_t curr, int16_t prev) {
+  int32_t d = static_cast<int32_t>(curr) - static_cast<int32_t>(prev);
+  if (d > 32767)
+    d -= 65536;
+  if (d < -32768)
+    d += 65536;
+  return d;
+}
+
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   int value = 0;
-  int32_t wraps_snapshot;
-  int16_t curr16;
-
-  // Atomicky seber wraps + aktuální 16bit hodnotu čítače
-  ENTER_CRITICAL();
-  wraps_snapshot = this->hw_wraps_;
   esp_err_t err = pcnt_unit_get_count(this->unit, &value);
-  EXIT_CRITICAL();
-
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
+  int16_t curr = static_cast<int16_t>(value);
 
-  curr16 = static_cast<int16_t>(value);
+  if (this->first_read_) {
+    this->last_count16_ = curr;
+    this->first_read_ = false;
+    return 0;
+  }
 
-  // Správná rekonstrukce: posun + SEČTENÍ (ne bitové OR)
-  // ext = wraps * 65536 + curr16;  (wraps krok = 2^16)
-  int64_t ext = (static_cast<int64_t>(wraps_snapshot) << 16) + static_cast<int64_t>(curr16);
+  int32_t delta = unwrap16_nearest(curr, this->last_count16_);
+  this->last_count16_ = curr;
 
-  int64_t delta = ext - this->last_ext_;
-  this->last_ext_ = ext;
-
-  // Bezpečnostní saturace do 32 bitů (nemělo by nastat, ale ať to nikdy „neulítne“)
+  // Saturace do 32 bitů (teoretická ochrana)
   if (delta > INT32_MAX)
     delta = INT32_MAX;
   if (delta < INT32_MIN)
@@ -234,11 +202,6 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
 HwPulseCounterStorage::~HwPulseCounterStorage() {
   if (this->unit != nullptr) {
     pcnt_unit_stop(this->unit);
-  }
-  if (this->cb_registered_ && this->unit != nullptr) {
-    pcnt_event_callbacks_t cbs = {};
-    pcnt_unit_register_event_callbacks(this->unit, &cbs, nullptr);
-    this->cb_registered_ = false;
   }
   if (this->channel != nullptr) {
     pcnt_del_channel(this->channel);
