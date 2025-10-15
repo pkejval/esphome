@@ -8,7 +8,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
-// Pozn.: Kritickou sekci nepoužíváme kolem driveru, ale makra necháme k dispozici.
+// Nemáme dlouhé kritické sekce kolem driveru, ale necháváme makra pro případné krátké lokální uzamčení.
 static portMUX_TYPE s_pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
 #define ENTER_CRIT() portENTER_CRITICAL(&s_pcnt_mux)
 #define EXIT_CRIT() portEXIT_CRITICAL(&s_pcnt_mux)
@@ -203,66 +203,90 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   return true;
 }
 
-// Delta výpočet se stabilizovaným snapshotem wraps+count (bez dlouhé kritické sekce)
+// Stabilizovaný tri-snapshot bez WDT: (wraps1, count1, wraps2, count2, wraps3)
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
-  int value = 0;
-  int32_t w1, w2;
-  esp_err_t err;
+  constexpr int kMaxTries = 6;
   int tries = 0;
 
-  // 1) První pokus: wraps → count → wraps; musí být shodné
-  while (true) {
-    w1 = this->wraps_;                              // volně čteno (ISR může mezitím změnit)
-    err = pcnt_unit_get_count(this->unit, &value);  // driver – NE v kritické sekci
-    w2 = this->wraps_;
-
+  while (tries++ < kMaxTries) {
+    int32_t w1 = this->wraps_;
+    int v1 = 0;
+    esp_err_t err = pcnt_unit_get_count(this->unit, &v1);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
       return 0;
     }
-    if (w1 == w2)
-      break;  // konzistentní snapshot
-    if (++tries > 3) {
-      // 2) Stabilizační krok: chyť aktuální wraps a k němu dočti count, dokud se wraps nemění
-      int32_t w_stable = w2;
-      for (int i = 0; i < 3; ++i) {
-        err = pcnt_unit_get_count(this->unit, &value);
-        int32_t w3 = this->wraps_;
-        if (err != ESP_OK) {
-          ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
-          return 0;
-        }
-        if (w3 == w_stable) {
-          w2 = w_stable;
-          goto snapshot_ok;
-        }
-        w_stable = w3;
-      }
-      // Pokud se nedaří stabilizovat, zopakujeme hlavní smyčku
-      tries = 0;
+    int32_t w2 = this->wraps_;
+
+    int v2 = 0;
+    err = pcnt_unit_get_count(this->unit, &v2);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
+      return 0;
     }
+    int32_t w3 = this->wraps_;
+
+    // Případy:
+    // A) w1==w2==w3 → stabilní okno, ber v2/w3.
+    if (w1 == w2 && w2 == w3) {
+      const int16_t c = static_cast<int16_t>(v2);
+      const int64_t ext = (static_cast<int64_t>(w3) << 16) + static_cast<int64_t>(c);
+      if (this->first_read_) {
+        this->last_ext_ = ext;
+        this->first_read_ = false;
+        return 0;
+      }
+      int64_t d = ext - this->last_ext_;
+      this->last_ext_ = ext;
+      if (d > INT32_MAX)
+        d = INT32_MAX;
+      if (d < INT32_MIN)
+        d = INT32_MIN;
+      return static_cast<pulse_counter_t>(d);
+    }
+
+    // B) w1==w2, w2!=w3 → wrap nastal PO v2 → ber v2/w2.
+    if (w1 == w2 && w2 != w3) {
+      const int16_t c = static_cast<int16_t>(v2);
+      const int64_t ext = (static_cast<int64_t>(w2) << 16) + static_cast<int64_t>(c);
+      if (this->first_read_) {
+        this->last_ext_ = ext;
+        this->first_read_ = false;
+        return 0;
+      }
+      int64_t d = ext - this->last_ext_;
+      this->last_ext_ = ext;
+      if (d > INT32_MAX)
+        d = INT32_MAX;
+      if (d < INT32_MIN)
+        d = INT32_MIN;
+      return static_cast<pulse_counter_t>(d);
+    }
+
+    // C) w1!=w2, w2==w3 → wrap nastal MEZI v1 a v2 → ber v2/w3.
+    if (w1 != w2 && w2 == w3) {
+      const int16_t c = static_cast<int16_t>(v2);
+      const int64_t ext = (static_cast<int64_t>(w3) << 16) + static_cast<int64_t>(c);
+      if (this->first_read_) {
+        this->last_ext_ = ext;
+        this->first_read_ = false;
+        return 0;
+      }
+      int64_t d = ext - this->last_ext_;
+      this->last_ext_ = ext;
+      if (d > INT32_MAX)
+        d = INT32_MAX;
+      if (d < INT32_MIN)
+        d = INT32_MIN;
+      return static_cast<pulse_counter_t>(d);
+    }
+
+    // D) jiné kombinace → opakuj (wrapů proběhlo víc; typicky při extrémní frekvenci)
   }
-snapshot_ok:
 
-  const int32_t wraps = w2;  // stabilní snapshot wraps
-  const int16_t curr16 = static_cast<int16_t>(value);
-  const int64_t ext = (static_cast<int64_t>(wraps) << 16) + static_cast<int64_t>(curr16);
-
-  if (this->first_read_) {
-    this->last_ext_ = ext;
-    this->first_read_ = false;
-    return 0;
-  }
-
-  int64_t delta = ext - this->last_ext_;
-  this->last_ext_ = ext;
-
-  if (delta > INT32_MAX)
-    delta = INT32_MAX;
-  if (delta < INT32_MIN)
-    delta = INT32_MIN;
-
-  return static_cast<pulse_counter_t>(delta);
+  // Pokud by se nepodařilo stabilizovat (velmi nepravděpodobné), vrať 0 a zaloguj.
+  ESP_LOGW(TAG, "PCNT snapshot not stabilized after %d tries; dropping sample", kMaxTries);
+  return 0;
 }
 
 HwPulseCounterStorage::~HwPulseCounterStorage() {
