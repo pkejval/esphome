@@ -177,10 +177,9 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   err = pcnt_unit_clear_count(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
-    // I když clear selže, vrať aspoň přečtenou hodnotu, ať neztratíme data.
+    // i při selhání clearu vrátíme přečtenou hodnotu
   }
 
-  // První čtení po startu/smazání vrátí prostě to, co naběhlo od posledního clearu.
   this->first_read_ = false;
   return static_cast<pulse_counter_t>(value);
 }
@@ -235,31 +234,12 @@ void PulseCounterSensor::update() {
     const uint64_t interval_us = now - this->last_time_us_;
     if (interval_us > 0) {
       const double value_ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(interval_us);
-
-      // --- Sanity guard (EWMA absolutní hodnoty PPM) ---
-      bool publish_ok = std::isfinite(value_ppm);
-      const double abs_ppm = std::abs(value_ppm);
-
-      if (publish_ok) {
-        if (this->ema_abs_ppm_ <= 0.0) {
-          // inicializace
-          this->ema_abs_ppm_ = abs_ppm;
-        } else {
-          // heuristický práh: 4× běžná úroveň + malý offset
-          const double threshold = this->ema_abs_ppm_ * 4.0 + 100000.0;
-          if (abs_ppm > threshold) {
-            ESP_LOGW(TAG, "'%s': Spiky sample filtered (%.1f ppm > %.1f ppm). raw=%" PRIi32 ", dt=%" PRIu64 " us",
-                     this->get_name().c_str(), value_ppm, threshold, raw, interval_us);
-            publish_ok = false;
-          }
-        }
-      }
-
-      if (publish_ok) {
+      if (std::isfinite(value_ppm)) {
         ESP_LOGD(TAG, "'%s': Retrieved counter: %.6f pulses/min", this->get_name().c_str(), value_ppm);
         this->publish_state(static_cast<float>(value_ppm));
-        // EMA update
-        this->ema_abs_ppm_ = EMA_ALPHA * abs_ppm + (1.0 - EMA_ALPHA) * this->ema_abs_ppm_;
+      } else {
+        ESP_LOGW(TAG, "'%s': Computed non-finite value (raw=%" PRIi32 ", dt=%" PRIu64 " us) — skipping publish",
+                 this->get_name().c_str(), raw, interval_us);
       }
     }
   }

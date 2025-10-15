@@ -49,7 +49,7 @@ struct BasicPulseCounterStorage : public PulseCounterStorageBase {
 };
 
 #ifdef HAS_PCNT
-// HW PCNT – read-and-clear varianta (bez watchpointů)
+// HW PCNT – read-and-clear varianta (bez watchpointů a bez SW filtru/EMA)
 struct HwPulseCounterStorage : public PulseCounterStorageBase {
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;
@@ -85,10 +85,6 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   uint64_t last_time_us_{0};
   uint64_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};
-
-  // Sanity-guard (EWMA absolutní hodnoty PPM)
-  double ema_abs_ppm_{0.0};
-  static constexpr double EMA_ALPHA = 0.2;  // váha nového vzorku
 };
 
 }  // namespace pulse_counter
