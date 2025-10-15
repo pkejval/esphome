@@ -1,7 +1,6 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
-#include "esphome/core/application.h"
 
 #include <limits>
 #include <cmath>
@@ -100,12 +99,6 @@ static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
   }
 }
 
-// Feed WDT only if driver path is unusually slow.
-// Override with -DPULSE_COUNTER_WDT_SLOWPATH_US=... in build flags.
-#ifndef PULSE_COUNTER_WDT_SLOWPATH_US
-#define PULSE_COUNTER_WDT_SLOWPATH_US 5000  // microseconds
-#endif
-
 bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin = pin;
   this->pin->setup();
@@ -175,8 +168,6 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
 }
 
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
-  const uint64_t t0 = now_us();
-
   int value = 0;
   esp_err_t err = pcnt_unit_get_count(this->unit, &value);
   if (err != ESP_OK) {
@@ -188,11 +179,6 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
     // Return value even if clear failed.
-  }
-
-  const uint64_t dt = now_us() - t0;
-  if (dt > PULSE_COUNTER_WDT_SLOWPATH_US) {
-    App.feed_wdt();
   }
 
   return static_cast<pulse_counter_t>(value);
