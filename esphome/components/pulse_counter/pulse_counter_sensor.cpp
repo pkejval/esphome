@@ -1,12 +1,11 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
+#include "esphome/core/helpers.h"  // <- kvůli InterruptLock
 #include <limits>
 #include <cmath>
 
 #if defined(USE_ESP32)
 #include <esp_timer.h>
-#else
-// pro Basic režim níže používáme noInterrupts/interrupts makra v HALu
 #endif
 
 namespace esphome {
@@ -66,11 +65,14 @@ bool BasicPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
 
 pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
   pulse_counter_t current;
-  noInterrupts();
-  current = this->counter;
-  pulse_counter_t ret = current - this->last_value;
-  this->last_value = current;
-  interrupts();
+  pulse_counter_t ret;
+  {
+    // Kritická sekce – snapshot counter + update last_value atomicky
+    InterruptLock lock;
+    current = this->counter;
+    ret = current - this->last_value;
+    this->last_value = current;
+  }
   return ret;
 }
 
@@ -97,7 +99,7 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin->setup();
 
   pcnt_unit_config_t unit_cfg = {};
-  // Standardní limity (signed 16b): -32768 .. 32767
+  // Signed 16-bit limity: -32768 .. 32767 (HW režim s natural wrap/limit reset; delta řešíme nearest-unwrap)
   unit_cfg.low_limit = std::numeric_limits<int16_t>::min();
   unit_cfg.high_limit = std::numeric_limits<int16_t>::max();
   esp_err_t err = pcnt_new_unit(&unit_cfg, &this->unit);
@@ -190,7 +192,7 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   int32_t delta = unwrap16_nearest(curr, this->last_count16_);
   this->last_count16_ = curr;
 
-  // Saturace do 32 bitů (teoretická ochrana)
+  // Teoretická ochrana (už je to v int32)
   if (delta > INT32_MAX)
     delta = INT32_MAX;
   if (delta < INT32_MIN)
