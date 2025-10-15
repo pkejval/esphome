@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
+// Pozn.: Kritickou sekci nepoužíváme kolem driveru, ale makra necháme k dispozici.
 static portMUX_TYPE s_pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
 #define ENTER_CRIT() portENTER_CRITICAL(&s_pcnt_mux)
 #define EXIT_CRIT() portEXIT_CRITICAL(&s_pcnt_mux)
@@ -202,34 +203,48 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   return true;
 }
 
-// Delta výpočet s atomickým snapshotem wraps+count
+// Delta výpočet se stabilizovaným snapshotem wraps+count (bez dlouhé kritické sekce)
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   int value = 0;
-  int32_t wraps_before, wraps_after;
+  int32_t w1, w2;
   esp_err_t err;
   int tries = 0;
 
-  // Atomicky přečteme wraps + count (ISR nemůže měnit wraps_ uprostřed)
+  // 1) První pokus: wraps → count → wraps; musí být shodné
   while (true) {
-    ENTER_CRIT();
-    wraps_before = this->wraps_;
-    err = pcnt_unit_get_count(this->unit, &value);
-    wraps_after = this->wraps_;
-    EXIT_CRIT();
+    w1 = this->wraps_;                              // volně čteno (ISR může mezitím změnit)
+    err = pcnt_unit_get_count(this->unit, &value);  // driver – NE v kritické sekci
+    w2 = this->wraps_;
 
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
       return 0;
     }
-    if (wraps_before == wraps_after) {
-      break;  // máme konzistentní snapshot
-    }
-    if (++tries > 4) {
-      break;  // vezmeme novější hodnotu
+    if (w1 == w2)
+      break;  // konzistentní snapshot
+    if (++tries > 3) {
+      // 2) Stabilizační krok: chyť aktuální wraps a k němu dočti count, dokud se wraps nemění
+      int32_t w_stable = w2;
+      for (int i = 0; i < 3; ++i) {
+        err = pcnt_unit_get_count(this->unit, &value);
+        int32_t w3 = this->wraps_;
+        if (err != ESP_OK) {
+          ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
+          return 0;
+        }
+        if (w3 == w_stable) {
+          w2 = w_stable;
+          goto snapshot_ok;
+        }
+        w_stable = w3;
+      }
+      // Pokud se nedaří stabilizovat, zopakujeme hlavní smyčku
+      tries = 0;
     }
   }
+snapshot_ok:
 
-  const int32_t wraps = wraps_after;
+  const int32_t wraps = w2;  // stabilní snapshot wraps
   const int16_t curr16 = static_cast<int16_t>(value);
   const int64_t ext = (static_cast<int64_t>(wraps) << 16) + static_cast<int64_t>(curr16);
 
