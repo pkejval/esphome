@@ -1,6 +1,6 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
-#include "esphome/core/helpers.h"
+#include "esphome/core/helpers.h"  // InterruptLock pro SW čítač
 #include <limits>
 #include <cmath>
 
@@ -32,6 +32,8 @@ std::unique_ptr<PulseCounterStorageBase> get_storage(bool hw_pcnt) {
 #else
 std::unique_ptr<PulseCounterStorageBase> get_storage(bool) { return std::make_unique<BasicPulseCounterStorage>(); }
 #endif
+
+// -------------------- BASIC (SW) --------------------
 
 void IRAM_ATTR BasicPulseCounterStorage::gpio_intr(BasicPulseCounterStorage *arg) {
   const uint32_t now = micros();
@@ -67,7 +69,7 @@ pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
   pulse_counter_t current;
   pulse_counter_t ret;
   {
-    InterruptLock lock;
+    InterruptLock lk;
     current = this->counter;
     ret = current - this->last_value;
     this->last_value = current;
@@ -81,6 +83,8 @@ BasicPulseCounterStorage::~BasicPulseCounterStorage() {
   }
 }
 
+// -------------------- HW PCNT --------------------
+
 #ifdef HAS_PCNT
 static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
   switch (m) {
@@ -93,20 +97,33 @@ static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
   }
 }
 
+// ISR callback: zvyš/niž počet wrapů podle dosaženého watch-pointu
+bool IRAM_ATTR HwPulseCounterStorage::on_reach_cb(pcnt_unit_handle_t, const pcnt_watch_event_data_t *edata,
+                                                  void *user_ctx) {
+  auto *self = static_cast<HwPulseCounterStorage *>(user_ctx);
+  if (edata->watch_point_value == self->high_watch_) {
+    self->wraps_ += 1;
+  } else if (edata->watch_point_value == self->low_watch_) {
+    self->wraps_ -= 1;
+  }
+  return true;  // OK i když nikoho nebudíme
+}
+
 bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin = pin;
   this->pin->setup();
 
+  // 1) Jednotka s validními signed limity: -32768..32767
   pcnt_unit_config_t unit_cfg = {};
-  // Nastavíme limity mimo dosah int16_t tak, aby NIKDY nedošlo k HW resetu a čítač se přirozeně přetočil.
-  unit_cfg.low_limit = static_cast<int>(-32769);  // < INT16_MIN
-  unit_cfg.high_limit = static_cast<int>(32768);  // > INT16_MAX
+  unit_cfg.low_limit = std::numeric_limits<int16_t>::min();   // -32768
+  unit_cfg.high_limit = std::numeric_limits<int16_t>::max();  //  32767
   esp_err_t err = pcnt_new_unit(&unit_cfg, &this->unit);
   if (err != ESP_OK || this->unit == nullptr) {
     ESP_LOGE(TAG, "Creating PCNT unit failed: %s", esp_err_to_name(err));
     return false;
   }
 
+  // 2) Kanál (počítání hran)
   pcnt_chan_config_t chan_cfg = {};
   chan_cfg.edge_gpio_num = this->pin->get_pin();
   chan_cfg.level_gpio_num = -1;
@@ -129,6 +146,7 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     return false;
   }
 
+  // 3) Glitch filtr (volitelně)
   if (this->filter_us != 0) {
     pcnt_glitch_filter_config_t gf = {};
     uint64_t ns = static_cast<uint64_t>(this->filter_us) * 1000ULL;
@@ -140,6 +158,24 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     }
   }
 
+  // 4) Watch-pointy a registrace callbacků (wrap detekce)
+  err = pcnt_unit_add_watch_point(this->unit, this->high_watch_);
+  if (err == ESP_OK)
+    err = pcnt_unit_add_watch_point(this->unit, this->low_watch_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Adding watch points failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  pcnt_event_callbacks_t cbs = {};
+  cbs.on_reach = &HwPulseCounterStorage::on_reach_cb;
+  err = pcnt_unit_register_event_callbacks(this->unit, &cbs, this);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Register event callbacks failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  this->cb_registered_ = true;
+
+  // 5) Start
   err = pcnt_unit_enable(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Enabling PCNT unit failed: %s", esp_err_to_name(err));
@@ -151,7 +187,8 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     return false;
   }
 
-  this->last_count16_ = 0;
+  this->wraps_ = 0;
+  this->last_ext_ = 0;
   this->first_read_ = true;
 
   err = pcnt_unit_start(this->unit);
@@ -163,40 +200,58 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   return true;
 }
 
-// Signed unwrap (delta v (-32768, 32768])
-static inline int32_t unwrap16_signed(int16_t curr, int16_t prev) {
-  int32_t d = static_cast<int32_t>(curr) - static_cast<int32_t>(prev);
-  if (d > 32767)
-    d -= 65536;
-  if (d < -32768)
-    d += 65536;
-  return d;
-}
-
+// Delta z rozšířené hodnoty: (wraps<<16) + int16_t(count)
+// Double-snapshot (wraps před a po) zajistí konzistenci
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
+  int wraps1, wraps2;
   int value = 0;
-  esp_err_t err = pcnt_unit_get_count(this->unit, &value);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
-    return 0;
-  }
+  esp_err_t err;
+  int tries = 0;
 
-  const int16_t curr = static_cast<int16_t>(value);
+  do {
+    wraps1 = this->wraps_;
+    err = pcnt_unit_get_count(this->unit, &value);
+    wraps2 = this->wraps_;
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
+      return 0;
+    }
+    if (++tries > 4)
+      break;  // nouzový ústup – vezmeme wraps2 + value
+  } while (wraps1 != wraps2);
+
+  const int32_t wraps = wraps2;  // konzistentní snapshot
+  const int16_t curr16 = static_cast<int16_t>(value);
+
+  const int64_t ext = (static_cast<int64_t>(wraps) << 16) + static_cast<int64_t>(curr16);
 
   if (this->first_read_) {
-    this->last_count16_ = curr;
+    this->last_ext_ = ext;
     this->first_read_ = false;
     return 0;
   }
 
-  const int32_t delta = unwrap16_signed(curr, this->last_count16_);
-  this->last_count16_ = curr;
+  int64_t delta = ext - this->last_ext_;
+  this->last_ext_ = ext;
+
+  // Saturace do 32 bitů pro jistotu
+  if (delta > INT32_MAX)
+    delta = INT32_MAX;
+  if (delta < INT32_MIN)
+    delta = INT32_MIN;
+
   return static_cast<pulse_counter_t>(delta);
 }
 
 HwPulseCounterStorage::~HwPulseCounterStorage() {
   if (this->unit != nullptr) {
     pcnt_unit_stop(this->unit);
+  }
+  if (this->cb_registered_ && this->unit != nullptr) {
+    // Odregistruj callbacky (prevence leaků)
+    pcnt_event_callbacks_t cbs = {};
+    pcnt_unit_register_event_callbacks(this->unit, &cbs, nullptr);
+    this->cb_registered_ = false;
   }
   if (this->channel != nullptr) {
     pcnt_del_channel(this->channel);
@@ -208,6 +263,8 @@ HwPulseCounterStorage::~HwPulseCounterStorage() {
   }
 }
 #endif
+
+// -------------------- SENSOR --------------------
 
 void PulseCounterSensor::setup() {
   if (!this->storage_->pulse_counter_setup(this->pin_)) {

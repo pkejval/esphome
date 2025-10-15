@@ -54,11 +54,24 @@ struct HwPulseCounterStorage : public PulseCounterStorageBase {
   pulse_counter_t read_raw_value() override;
   ~HwPulseCounterStorage() override;
 
+  // PCNT v2 driver handles
   pcnt_unit_handle_t unit{nullptr};
   pcnt_channel_handle_t channel{nullptr};
 
-  int16_t last_count16_{0};
+  // Watch-pointy pro limity signed 16b
+  const int high_watch_{32767};
+  const int low_watch_{-32768};
+
+  // Počet průchodů limitem (rozšíření šířky)
+  volatile int32_t wraps_{0};
+  volatile bool cb_registered_{false};
+
+  // Poslední extended hodnota (pro delta)
+  int64_t last_ext_{0};
   bool first_read_{true};
+
+  // ISR callback pro watch-pointy
+  static bool IRAM_ATTR on_reach_cb(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx);
 };
 #endif
 
