@@ -1,6 +1,7 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
 #include <limits>
+#include <cmath>
 
 #if defined(USE_ESP32)
 #include <esp_timer.h>
@@ -97,6 +98,18 @@ static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
   }
 }
 
+// Watch-point callback – sčítá wrapy
+bool IRAM_ATTR HwPulseCounterStorage::on_reach_cb(pcnt_unit_handle_t, const pcnt_watch_event_data_t *edata,
+                                                  void *user_ctx) {
+  auto *self = static_cast<HwPulseCounterStorage *>(user_ctx);
+  if (edata->watch_point_value == self->high_watch_) {
+    self->hw_wraps_ += 1;
+  } else if (edata->watch_point_value == self->low_watch_) {
+    self->hw_wraps_ -= 1;
+  }
+  return true;
+}
+
 bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin = pin;
   this->pin->setup();
@@ -143,6 +156,23 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     }
   }
 
+  err = pcnt_unit_add_watch_point(this->unit, this->high_watch_);
+  if (err == ESP_OK)
+    err = pcnt_unit_add_watch_point(this->unit, this->low_watch_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Adding watch points failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  pcnt_event_callbacks_t cbs = {};
+  cbs.on_reach = &HwPulseCounterStorage::on_reach_cb;
+  err = pcnt_unit_register_event_callbacks(this->unit, &cbs, this);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Register event callbacks failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  this->cb_registered_ = true;
+
   err = pcnt_unit_enable(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Enabling PCNT unit failed: %s", esp_err_to_name(err));
@@ -155,6 +185,9 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   }
 
   this->last_value = 0;
+  this->hw_wraps_ = 0;
+  this->last_ext_ = 0;
+
   err = pcnt_unit_start(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Starting PCNT unit failed: %s", esp_err_to_name(err));
@@ -166,28 +199,46 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
 
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   int value = 0;
+  int32_t wraps_snapshot;
+  int16_t curr16;
+
+  // Atomicky seber wraps + aktuální 16bit hodnotu čítače
+  ENTER_CRITICAL();
+  wraps_snapshot = this->hw_wraps_;
   esp_err_t err = pcnt_unit_get_count(this->unit, &value);
+  EXIT_CRITICAL();
+
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
 
-  const int16_t curr = static_cast<int16_t>(value);
-  const int16_t prev = static_cast<int16_t>(this->last_value);
-  int32_t diff = static_cast<int32_t>(curr) - static_cast<int32_t>(prev);
+  curr16 = static_cast<int16_t>(value);
 
-  if (diff > 32767)
-    diff -= 65536;
-  else if (diff < -32768)
-    diff += 65536;
+  // Správná rekonstrukce: posun + SEČTENÍ (ne bitové OR)
+  // ext = wraps * 65536 + curr16;  (wraps krok = 2^16)
+  int64_t ext = (static_cast<int64_t>(wraps_snapshot) << 16) + static_cast<int64_t>(curr16);
 
-  this->last_value = static_cast<pulse_counter_t>(curr);
-  return static_cast<pulse_counter_t>(diff);
+  int64_t delta = ext - this->last_ext_;
+  this->last_ext_ = ext;
+
+  // Bezpečnostní saturace do 32 bitů (nemělo by nastat, ale ať to nikdy „neulítne“)
+  if (delta > INT32_MAX)
+    delta = INT32_MAX;
+  if (delta < INT32_MIN)
+    delta = INT32_MIN;
+
+  return static_cast<pulse_counter_t>(delta);
 }
 
 HwPulseCounterStorage::~HwPulseCounterStorage() {
   if (this->unit != nullptr) {
     pcnt_unit_stop(this->unit);
+  }
+  if (this->cb_registered_ && this->unit != nullptr) {
+    pcnt_event_callbacks_t cbs = {};
+    pcnt_unit_register_event_callbacks(this->unit, &cbs, nullptr);
+    this->cb_registered_ = false;
   }
   if (this->channel != nullptr) {
     pcnt_del_channel(this->channel);
@@ -233,12 +284,16 @@ void PulseCounterSensor::update() {
     const uint64_t interval_us = now - this->last_time_us_;
     if (interval_us > 0) {
       const double value_ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(interval_us);
-      ESP_LOGD(TAG, "'%s': Retrieved counter: %.6f pulses/min", this->get_name().c_str(), value_ppm);
-      this->publish_state(static_cast<float>(value_ppm));
+      if (std::isfinite(value_ppm)) {
+        ESP_LOGD(TAG, "'%s': Retrieved counter: %.6f pulses/min", this->get_name().c_str(), value_ppm);
+        this->publish_state(static_cast<float>(value_ppm));
+      } else {
+        ESP_LOGW(TAG, "'%s': Computed non-finite value (raw=%" PRIi32 ", dt=%" PRIu64 " us) — skipping publish",
+                 this->get_name().c_str(), raw, interval_us);
+      }
     }
   }
 
-  // Increment total counter (monotonic)
   if (this->total_sensor_ != nullptr) {
     if (raw > 0) {
       this->current_total_ += static_cast<uint64_t>(raw);
@@ -246,10 +301,7 @@ void PulseCounterSensor::update() {
       ESP_LOGD(TAG, "'%s': Total +%" PRIi32 " -> %" PRIu64 " pulses", this->get_name().c_str(), raw,
                this->current_total_);
     } else if (raw < 0) {
-      // Ignore to compatibility with STATE_CLASS_TOTAL_INCREASING
       ESP_LOGV(TAG, "'%s': Negative delta (%" PRIi32 ") ignored for total (monotonic).", this->get_name().c_str(), raw);
-    } else {
-      // raw == 0
     }
   }
 

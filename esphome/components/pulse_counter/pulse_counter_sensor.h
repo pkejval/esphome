@@ -54,8 +54,21 @@ struct HwPulseCounterStorage : public PulseCounterStorageBase {
   pulse_counter_t read_raw_value() override;
   ~HwPulseCounterStorage() override;
 
+  // PCNT v2 driver handles
   pcnt_unit_handle_t unit{nullptr};
   pcnt_channel_handle_t channel{nullptr};
+
+  // Rozšíření čítače přes wrap watch-pointy
+  volatile int32_t hw_wraps_{0};  // počet překročení limitů (±32768 kroky)
+  volatile bool cb_registered_{false};
+  int high_watch_{32767};
+  int low_watch_{-32768};
+
+  // Extended minulá hodnota pro delta (64-bit proti wrapům)
+  int64_t last_ext_{0};
+
+  // Static ISR callbacky
+  static bool IRAM_ATTR on_reach_cb(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx);
 };
 #endif
 
@@ -81,7 +94,7 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   InternalGPIOPin *pin_{nullptr};
   std::unique_ptr<PulseCounterStorageBase> storage_;
   uint64_t last_time_us_{0};
-  uint64_t current_total_{0};
+  uint64_t current_total_{0};  // monotonně rostoucí total
   sensor::Sensor *total_sensor_{nullptr};
 };
 
