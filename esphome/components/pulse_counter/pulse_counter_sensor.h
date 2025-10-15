@@ -49,7 +49,7 @@ struct BasicPulseCounterStorage : public PulseCounterStorageBase {
 };
 
 #ifdef HAS_PCNT
-// HW PCNT – read-and-clear varianta (bez watchpointů a bez SW filtru/EMA)
+// HW PCNT – read-and-clear varianta (bez watchpointů a bez SW filtru)
 struct HwPulseCounterStorage : public PulseCounterStorageBase {
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;

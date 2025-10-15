@@ -1,6 +1,7 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
-#include "esphome/core/helpers.h"  // InterruptLock pro SW čítač
+#include "esphome/core/helpers.h"      // InterruptLock pro SW čítač
+#include "esphome/core/application.h"  // App.feed_wdt()
 #include <limits>
 #include <cmath>
 
@@ -166,15 +167,24 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
 }
 
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
+  // Krátké "krmení" WDT před a po volání driveru
+  App.feed_wdt();
+
   int value = 0;
   esp_err_t err = pcnt_unit_get_count(this->unit, &value);
+
+  App.feed_wdt();
+
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
 
-  // V read&clear módu je delta = aktuální count; po přečtení ihned vynulujeme.
+  // Read & clear: delta = aktuální count
   err = pcnt_unit_clear_count(this->unit);
+
+  App.feed_wdt();
+
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
     // i při selhání clearu vrátíme přečtenou hodnotu
