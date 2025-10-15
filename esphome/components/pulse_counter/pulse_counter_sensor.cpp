@@ -1,7 +1,7 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"      // InterruptLock pro SW čítač
-#include "esphome/core/application.h"  // App.feed_wdt()
+#include "esphome/core/application.h"  // App.feed_wdt() – pouze ve slowpath
 #include <limits>
 #include <cmath>
 
@@ -15,6 +15,12 @@ namespace pulse_counter {
 static const char *const TAG = "pulse_counter";
 
 const char *const EDGE_MODE_TO_STRING[] = {"DISABLE", "INCREMENT", "DECREMENT"};
+
+// Slowpath práh – když se get_count()+clear_count protáhne přes tento čas, krmíme WDT.
+// Můžeš přepnout přes -DPULSE_COUNTER_WDT_SLOWPATH_US=... v build_flags.
+#ifndef PULSE_COUNTER_WDT_SLOWPATH_US
+#define PULSE_COUNTER_WDT_SLOWPATH_US 5000  // 5 ms
+#endif
 
 static inline uint64_t now_us() {
 #if defined(USE_ESP32)
@@ -167,27 +173,26 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
 }
 
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
-  // Krátké "krmení" WDT před a po volání driveru
-  App.feed_wdt();
+  // FAST PATH: žádné krmení WDT – měříme, jak dlouho trvá driver.
+  const uint64_t t0 = now_us();
 
   int value = 0;
   esp_err_t err = pcnt_unit_get_count(this->unit, &value);
-
-  App.feed_wdt();
-
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
 
-  // Read & clear: delta = aktuální count
   err = pcnt_unit_clear_count(this->unit);
-
-  App.feed_wdt();
-
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
     // i při selhání clearu vrátíme přečtenou hodnotu
+  }
+
+  const uint64_t dt = now_us() - t0;
+  if (dt > PULSE_COUNTER_WDT_SLOWPATH_US) {
+    // SLOW PATH: výjimečně se to protáhlo – nakrm WDT, ale mimo horkou cestu.
+    App.feed_wdt();
   }
 
   this->first_read_ = false;
