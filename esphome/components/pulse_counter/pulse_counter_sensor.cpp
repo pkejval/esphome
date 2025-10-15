@@ -1,6 +1,6 @@
 #include "pulse_counter_sensor.h"
 #include "esphome/core/log.h"
-#include "esphome/core/helpers.h"  // <- kvůli InterruptLock
+#include "esphome/core/helpers.h"
 #include <limits>
 #include <cmath>
 
@@ -67,7 +67,6 @@ pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
   pulse_counter_t current;
   pulse_counter_t ret;
   {
-    // Kritická sekce – snapshot counter + update last_value atomicky
     InterruptLock lock;
     current = this->counter;
     ret = current - this->last_value;
@@ -99,9 +98,9 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin->setup();
 
   pcnt_unit_config_t unit_cfg = {};
-  // Signed 16-bit limity: -32768 .. 32767 (HW režim s natural wrap/limit reset; delta řešíme nearest-unwrap)
-  unit_cfg.low_limit = std::numeric_limits<int16_t>::min();
-  unit_cfg.high_limit = std::numeric_limits<int16_t>::max();
+  // Nastavíme limity mimo dosah int16_t tak, aby NIKDY nedošlo k HW resetu a čítač se přirozeně přetočil.
+  unit_cfg.low_limit = static_cast<int>(-32769);  // < INT16_MIN
+  unit_cfg.high_limit = static_cast<int>(32768);  // > INT16_MAX
   esp_err_t err = pcnt_new_unit(&unit_cfg, &this->unit);
   if (err != ESP_OK || this->unit == nullptr) {
     ESP_LOGE(TAG, "Creating PCNT unit failed: %s", esp_err_to_name(err));
@@ -164,8 +163,8 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   return true;
 }
 
-// Nejbližší rozvinutí 16bit rozdílu (mod 65536) → delta ∈ (-32768, 32768]
-static inline int32_t unwrap16_nearest(int16_t curr, int16_t prev) {
+// Signed unwrap (delta v (-32768, 32768])
+static inline int32_t unwrap16_signed(int16_t curr, int16_t prev) {
   int32_t d = static_cast<int32_t>(curr) - static_cast<int32_t>(prev);
   if (d > 32767)
     d -= 65536;
@@ -181,7 +180,8 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
     ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
     return 0;
   }
-  int16_t curr = static_cast<int16_t>(value);
+
+  const int16_t curr = static_cast<int16_t>(value);
 
   if (this->first_read_) {
     this->last_count16_ = curr;
@@ -189,15 +189,8 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
     return 0;
   }
 
-  int32_t delta = unwrap16_nearest(curr, this->last_count16_);
+  const int32_t delta = unwrap16_signed(curr, this->last_count16_);
   this->last_count16_ = curr;
-
-  // Teoretická ochrana (už je to v int32)
-  if (delta > INT32_MAX)
-    delta = INT32_MAX;
-  if (delta < INT32_MIN)
-    delta = INT32_MIN;
-
   return static_cast<pulse_counter_t>(delta);
 }
 

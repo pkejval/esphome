@@ -57,7 +57,6 @@ struct HwPulseCounterStorage : public PulseCounterStorageBase {
   pcnt_unit_handle_t unit{nullptr};
   pcnt_channel_handle_t channel{nullptr};
 
-  // poslední 16bit hodnota z PCNT (pro nearest-unwrap delta)
   int16_t last_count16_{0};
   bool first_read_{true};
 };
