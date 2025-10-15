@@ -49,29 +49,15 @@ struct BasicPulseCounterStorage : public PulseCounterStorageBase {
 };
 
 #ifdef HAS_PCNT
+// HW PCNT – read-and-clear varianta (bez watchpointů)
 struct HwPulseCounterStorage : public PulseCounterStorageBase {
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;
   ~HwPulseCounterStorage() override;
 
-  // PCNT v2 driver handles
   pcnt_unit_handle_t unit{nullptr};
   pcnt_channel_handle_t channel{nullptr};
-
-  // Watch-pointy pro limity signed 16b
-  const int high_watch_{32767};
-  const int low_watch_{-32768};
-
-  // Počet průchodů limitem (rozšíření šířky)
-  volatile int32_t wraps_{0};
-  volatile bool cb_registered_{false};
-
-  // Poslední extended hodnota (pro delta)
-  int64_t last_ext_{0};
   bool first_read_{true};
-
-  // ISR callback pro watch-pointy
-  static bool IRAM_ATTR on_reach_cb(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx);
 };
 #endif
 
@@ -99,6 +85,10 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   uint64_t last_time_us_{0};
   uint64_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};
+
+  // Sanity-guard (EWMA absolutní hodnoty PPM)
+  double ema_abs_ppm_{0.0};
+  static constexpr double EMA_ALPHA = 0.2;  // váha nového vzorku
 };
 
 }  // namespace pulse_counter

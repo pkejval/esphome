@@ -6,12 +6,6 @@
 
 #if defined(USE_ESP32)
 #include <esp_timer.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/portmacro.h>
-// Nemáme dlouhé kritické sekce kolem driveru, ale necháváme makra pro případné krátké lokální uzamčení.
-static portMUX_TYPE s_pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
-#define ENTER_CRIT() portENTER_CRITICAL(&s_pcnt_mux)
-#define EXIT_CRIT() portEXIT_CRITICAL(&s_pcnt_mux)
 #endif
 
 namespace esphome {
@@ -89,7 +83,7 @@ BasicPulseCounterStorage::~BasicPulseCounterStorage() {
   }
 }
 
-// -------------------- HW PCNT --------------------
+// -------------------- HW PCNT (read & clear) --------------------
 
 #ifdef HAS_PCNT
 static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
@@ -101,18 +95,6 @@ static pcnt_channel_edge_action_t map_edge(PulseCounterCountMode m) {
     default:
       return PCNT_CHANNEL_EDGE_ACTION_HOLD;
   }
-}
-
-// ISR callback: zvyš/niž počet wrapů podle dosaženého watch-pointu
-bool IRAM_ATTR HwPulseCounterStorage::on_reach_cb(pcnt_unit_handle_t, const pcnt_watch_event_data_t *edata,
-                                                  void *user_ctx) {
-  auto *self = static_cast<HwPulseCounterStorage *>(user_ctx);
-  if (edata->watch_point_value == self->high_watch_) {
-    self->wraps_ += 1;
-  } else if (edata->watch_point_value == self->low_watch_) {
-    self->wraps_ -= 1;
-  }
-  return true;
 }
 
 bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
@@ -161,37 +143,17 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     }
   }
 
-  err = pcnt_unit_add_watch_point(this->unit, this->high_watch_);
-  if (err == ESP_OK)
-    err = pcnt_unit_add_watch_point(this->unit, this->low_watch_);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Adding watch points failed: %s", esp_err_to_name(err));
-    return false;
-  }
-
-  pcnt_event_callbacks_t cbs = {};
-  cbs.on_reach = &HwPulseCounterStorage::on_reach_cb;
-  err = pcnt_unit_register_event_callbacks(this->unit, &cbs, this);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Register event callbacks failed: %s", esp_err_to_name(err));
-    return false;
-  }
-  this->cb_registered_ = true;
-
   err = pcnt_unit_enable(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Enabling PCNT unit failed: %s", esp_err_to_name(err));
     return false;
   }
-
   err = pcnt_unit_clear_count(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
     return false;
   }
 
-  this->wraps_ = 0;
-  this->last_ext_ = 0;
   this->first_read_ = true;
 
   err = pcnt_unit_start(this->unit);
@@ -203,100 +165,29 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   return true;
 }
 
-// Stabilizovaný tri-snapshot bez WDT: (wraps1, count1, wraps2, count2, wraps3)
 pulse_counter_t HwPulseCounterStorage::read_raw_value() {
-  constexpr int kMaxTries = 6;
-  int tries = 0;
-
-  while (tries++ < kMaxTries) {
-    int32_t w1 = this->wraps_;
-    int v1 = 0;
-    esp_err_t err = pcnt_unit_get_count(this->unit, &v1);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
-      return 0;
-    }
-    int32_t w2 = this->wraps_;
-
-    int v2 = 0;
-    err = pcnt_unit_get_count(this->unit, &v2);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
-      return 0;
-    }
-    int32_t w3 = this->wraps_;
-
-    // Případy:
-    // A) w1==w2==w3 → stabilní okno, ber v2/w3.
-    if (w1 == w2 && w2 == w3) {
-      const int16_t c = static_cast<int16_t>(v2);
-      const int64_t ext = (static_cast<int64_t>(w3) << 16) + static_cast<int64_t>(c);
-      if (this->first_read_) {
-        this->last_ext_ = ext;
-        this->first_read_ = false;
-        return 0;
-      }
-      int64_t d = ext - this->last_ext_;
-      this->last_ext_ = ext;
-      if (d > INT32_MAX)
-        d = INT32_MAX;
-      if (d < INT32_MIN)
-        d = INT32_MIN;
-      return static_cast<pulse_counter_t>(d);
-    }
-
-    // B) w1==w2, w2!=w3 → wrap nastal PO v2 → ber v2/w2.
-    if (w1 == w2 && w2 != w3) {
-      const int16_t c = static_cast<int16_t>(v2);
-      const int64_t ext = (static_cast<int64_t>(w2) << 16) + static_cast<int64_t>(c);
-      if (this->first_read_) {
-        this->last_ext_ = ext;
-        this->first_read_ = false;
-        return 0;
-      }
-      int64_t d = ext - this->last_ext_;
-      this->last_ext_ = ext;
-      if (d > INT32_MAX)
-        d = INT32_MAX;
-      if (d < INT32_MIN)
-        d = INT32_MIN;
-      return static_cast<pulse_counter_t>(d);
-    }
-
-    // C) w1!=w2, w2==w3 → wrap nastal MEZI v1 a v2 → ber v2/w3.
-    if (w1 != w2 && w2 == w3) {
-      const int16_t c = static_cast<int16_t>(v2);
-      const int64_t ext = (static_cast<int64_t>(w3) << 16) + static_cast<int64_t>(c);
-      if (this->first_read_) {
-        this->last_ext_ = ext;
-        this->first_read_ = false;
-        return 0;
-      }
-      int64_t d = ext - this->last_ext_;
-      this->last_ext_ = ext;
-      if (d > INT32_MAX)
-        d = INT32_MAX;
-      if (d < INT32_MIN)
-        d = INT32_MIN;
-      return static_cast<pulse_counter_t>(d);
-    }
-
-    // D) jiné kombinace → opakuj (wrapů proběhlo víc; typicky při extrémní frekvenci)
+  int value = 0;
+  esp_err_t err = pcnt_unit_get_count(this->unit, &value);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Getting PCNT count failed: %s", esp_err_to_name(err));
+    return 0;
   }
 
-  // Pokud by se nepodařilo stabilizovat (velmi nepravděpodobné), vrať 0 a zaloguj.
-  ESP_LOGW(TAG, "PCNT snapshot not stabilized after %d tries; dropping sample", kMaxTries);
-  return 0;
+  // V read&clear módu je delta = aktuální count; po přečtení ihned vynulujeme.
+  err = pcnt_unit_clear_count(this->unit);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
+    // I když clear selže, vrať aspoň přečtenou hodnotu, ať neztratíme data.
+  }
+
+  // První čtení po startu/smazání vrátí prostě to, co naběhlo od posledního clearu.
+  this->first_read_ = false;
+  return static_cast<pulse_counter_t>(value);
 }
 
 HwPulseCounterStorage::~HwPulseCounterStorage() {
   if (this->unit != nullptr) {
     pcnt_unit_stop(this->unit);
-  }
-  if (this->cb_registered_ && this->unit != nullptr) {
-    pcnt_event_callbacks_t cbs = {};
-    pcnt_unit_register_event_callbacks(this->unit, &cbs, nullptr);
-    this->cb_registered_ = false;
   }
   if (this->channel != nullptr) {
     pcnt_del_channel(this->channel);
@@ -344,12 +235,31 @@ void PulseCounterSensor::update() {
     const uint64_t interval_us = now - this->last_time_us_;
     if (interval_us > 0) {
       const double value_ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(interval_us);
-      if (std::isfinite(value_ppm)) {
+
+      // --- Sanity guard (EWMA absolutní hodnoty PPM) ---
+      bool publish_ok = std::isfinite(value_ppm);
+      const double abs_ppm = std::abs(value_ppm);
+
+      if (publish_ok) {
+        if (this->ema_abs_ppm_ <= 0.0) {
+          // inicializace
+          this->ema_abs_ppm_ = abs_ppm;
+        } else {
+          // heuristický práh: 4× běžná úroveň + malý offset
+          const double threshold = this->ema_abs_ppm_ * 4.0 + 100000.0;
+          if (abs_ppm > threshold) {
+            ESP_LOGW(TAG, "'%s': Spiky sample filtered (%.1f ppm > %.1f ppm). raw=%" PRIi32 ", dt=%" PRIu64 " us",
+                     this->get_name().c_str(), value_ppm, threshold, raw, interval_us);
+            publish_ok = false;
+          }
+        }
+      }
+
+      if (publish_ok) {
         ESP_LOGD(TAG, "'%s': Retrieved counter: %.6f pulses/min", this->get_name().c_str(), value_ppm);
         this->publish_state(static_cast<float>(value_ppm));
-      } else {
-        ESP_LOGW(TAG, "'%s': Computed non-finite value (raw=%" PRIi32 ", dt=%" PRIu64 " us) — skipping publish",
-                 this->get_name().c_str(), raw, interval_us);
+        // EMA update
+        this->ema_abs_ppm_ = EMA_ALPHA * abs_ppm + (1.0 - EMA_ALPHA) * this->ema_abs_ppm_;
       }
     }
   }
