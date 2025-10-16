@@ -22,6 +22,9 @@ from esphome.core import CORE
 
 CONF_USE_PCNT = "use_pcnt"
 
+LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.8  # ESP32 a ESP32-S2
+MODERN_ESP32_PCNT_FILTER_LIMIT_US = 819.0  # ESP32-S3, C3, C6, H2
+
 pulse_counter_ns = cg.esphome_ns.namespace("pulse_counter")
 PulseCounterCountMode = pulse_counter_ns.enum("PulseCounterCountMode")
 COUNT_MODES = {
@@ -41,13 +44,36 @@ SetTotalPulsesAction = pulse_counter_ns.class_(
 )
 
 
-def validate_internal_filter(value):
-    use_pcnt = value.get(CONF_USE_PCNT)
-    if CORE.is_esp8266 and use_pcnt:
+def validate_internal_filter(config):
+    """Validate the internal_filter value based on hardware capabilities."""
+    use_pcnt = config.get(CONF_USE_PCNT)
+    if not use_pcnt:
+        return config
+
+    if CORE.is_esp8266:
         raise cv.Invalid(
             "Using hardware PCNT is only available on ESP32", [CONF_USE_PCNT]
         )
-    return value
+
+    if CORE.is_esp32:
+        filter_us = config[CONF_INTERNAL_FILTER].total_microseconds
+        variant = CORE.esp32_variant
+        limit = 0
+        is_legacy = variant in ("ESP32", "ESP32S2")
+
+        if is_legacy:
+            limit = LEGACY_ESP32_PCNT_FILTER_LIMIT_US
+        else:
+            limit = MODERN_ESP32_PCNT_FILTER_LIMIT_US
+
+        if filter_us > limit:
+            raise cv.Invalid(
+                f"The internal filter value of {config[CONF_INTERNAL_FILTER]} is too high for {variant}. "
+                f"The hardware limit for this chip is ~{limit}us. "
+                "Please use a lower value, or set 'use_pcnt: false' to use the software counter."
+            )
+
+    return config
 
 
 def validate_pulse_counter_pin(value):
@@ -121,7 +147,7 @@ async def to_code(config):
     count = config[CONF_COUNT_MODE]
     cg.add(var.set_rising_edge_mode(count[CONF_RISING_EDGE]))
     cg.add(var.set_falling_edge_mode(count[CONF_FALLING_EDGE]))
-    cg.add(var.set_filter_us(config[CONF_INTERNAL_FILTER]))
+    cg.add(var.set_filter_us(config[CONF_INTERNAL_FILTER].total_microseconds))
 
     if CONF_TOTAL in config:
         sens = await sensor.new_sensor(config[CONF_TOTAL])
