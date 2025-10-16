@@ -57,7 +57,8 @@ def validate_internal_filter(config):
 
     if CORE.is_esp32:
         filter_us = config[CONF_INTERNAL_FILTER].total_microseconds
-        variant = CORE.esp32_variant
+        # OPRAVENO: Správný způsob získání varianty čipu
+        variant = CORE.data["esp32"]["variant"]
         limit = 0
         is_legacy = variant in ("ESP32", "ESP32S2")
 
