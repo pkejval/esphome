@@ -119,13 +119,11 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
       pcnt_channel_set_edge_action(this->channel, map_edge(this->rising_edge_mode), map_edge(this->falling_edge_mode));
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Setting edge action failed: %s", esp_err_to_name(err));
-    return false;
   }
 
   err = pcnt_channel_set_level_action(this->channel, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_KEEP);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Setting level action failed: %s", esp_err_to_name(err));
-    return false;
   }
 
   if (this->filter_us != 0) {
@@ -134,7 +132,6 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
     err = pcnt_unit_set_glitch_filter(this->unit, &gf);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Setting glitch filter failed: %s", esp_err_to_name(err));
-      return false;
     }
   }
 
@@ -206,13 +203,11 @@ PulseCounterSensor::~PulseCounterSensor() {
 void PulseCounterSensor::timer_callback(void *arg) {
   auto *self = static_cast<PulseCounterSensor *>(arg);
 
-  // Reálný čas v µs
   const uint64_t t = static_cast<uint64_t>(esp_timer_get_time());
   const pulse_counter_t raw = self->storage_->read_raw_value();
 
   if (self->last_tick_us_ == 0) {
     self->last_tick_us_ = t;
-    // zapíšeme případný total delta, ale bez výpočtu ppm (chybí dt)
     if (raw != 0)
       self->pending_total_delta_.fetch_add(raw, std::memory_order_relaxed);
     return;
@@ -225,25 +220,12 @@ void PulseCounterSensor::timer_callback(void *arg) {
     self->pending_total_delta_.fetch_add(raw, std::memory_order_relaxed);
   }
 
-  if (dt_us == 0) {
+  if (dt_us == 0)
     return;
-  }
 
-  // Pulses per minute z reálného dt
   const double ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(dt_us);
-
   if (std::isfinite(ppm)) {
-    float out = static_cast<float>(ppm);
-    // Volitelné vyhlazení EMA (pevná alfa, časově nekorigovaná – jednoduché a stabilní)
-    if (self->ema_alpha_ > 0.0f && self->ema_alpha_ <= 1.0f) {
-      if (!std::isfinite(self->ema_state_))
-        self->ema_state_ = out;
-      else
-        self->ema_state_ = self->ema_state_ + self->ema_alpha_ * (out - self->ema_state_);
-      out = self->ema_state_;
-    }
-
-    self->last_calculated_ppm_.store(out, std::memory_order_relaxed);
+    self->last_calculated_ppm_.store(static_cast<float>(ppm), std::memory_order_relaxed);
     self->new_value_ready_.store(true, std::memory_order_release);
   }
 }
@@ -256,12 +238,12 @@ void PulseCounterSensor::setup() {
   }
 
 #if defined(USE_ESP32)
-  esp_timer_create_args_t timer_args = {
-      .callback = &PulseCounterSensor::timer_callback,
-      .arg = this,
-      .dispatch_method = ESP_TIMER_TASK,  // běh v timer tasku
-      .name = "pulse_counter",
-  };
+  esp_timer_create_args_t timer_args = {};
+  timer_args.callback = &PulseCounterSensor::timer_callback;
+  timer_args.arg = this;
+  timer_args.dispatch_method = ESP_TIMER_TASK;
+  timer_args.name = "pulse_counter";
+
   esp_err_t err = esp_timer_create(&timer_args, &this->timer_handle_);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "esp_timer_create failed: %s", esp_err_to_name(err));
@@ -271,7 +253,7 @@ void PulseCounterSensor::setup() {
 
   uint64_t period_us = static_cast<uint64_t>(this->get_update_interval()) * 1000ULL;
   if (period_us == 0)
-    period_us = 10000ULL;  // bezpečné minimum (10 ms), kdyby někdo nastavil 0
+    period_us = 10000ULL;  // 10 ms bezpečné minimum
 
   err = esp_timer_start_periodic(this->timer_handle_, period_us);
   if (err != ESP_OK) {
@@ -295,7 +277,6 @@ void PulseCounterSensor::set_update_interval(uint32_t update_interval) {
       ESP_LOGE(TAG, "esp_timer_start_periodic (restart) failed: %s", esp_err_to_name(err));
       this->mark_failed();
     }
-    // reset vzorkovací reference
     this->last_tick_us_ = 0;
   }
 #endif
@@ -313,40 +294,30 @@ void PulseCounterSensor::dump_config() {
   ESP_LOGCONFIG(TAG,
                 "  Rising Edge: %s\n"
                 "  Falling Edge: %s\n"
-                "  Filtering pulses shorter than %" PRIu32 " us\n"
-                "  EMA alpha: %.3f (0=off)",
+                "  Filtering pulses shorter than %" PRIu32 " us",
                 EDGE_MODE_TO_STRING[this->storage_->rising_edge_mode],
-                EDGE_MODE_TO_STRING[this->storage_->falling_edge_mode], this->storage_->filter_us, this->ema_alpha_);
+                EDGE_MODE_TO_STRING[this->storage_->falling_edge_mode], this->storage_->filter_us);
   LOG_UPDATE_INTERVAL(this);
 }
 
 void PulseCounterSensor::update() {
 #if defined(USE_ESP32)
-  // Publikace poslední hodnoty z timeru (nejnovější dostupná)
   if (this->new_value_ready_.load(std::memory_order_acquire)) {
     this->new_value_ready_.store(false, std::memory_order_release);
     const float ppm = this->last_calculated_ppm_.load(std::memory_order_relaxed);
     if (std::isfinite(ppm)) {
-      ESP_LOGD(TAG, "'%s': timer ppm=%.6f", this->get_name().c_str(), ppm);
       this->publish_state(ppm);
     }
   }
 
-  // Bezpečné převzetí přírůstku total a publikace
   if (this->total_sensor_ != nullptr) {
     const int32_t delta = this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
-    if (delta != 0) {
-      if (delta > 0) {
-        this->current_total_ += static_cast<uint64_t>(delta);
-        this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
-        ESP_LOGV(TAG, "'%s': Total += %" PRIi32 " -> %" PRIu64, this->get_name().c_str(), delta, this->current_total_);
-      } else {
-        ESP_LOGV(TAG, "'%s': Negative delta (%" PRIi32 ") ignored for total.", this->get_name().c_str(), delta);
-      }
+    if (delta > 0) {
+      this->current_total_ += static_cast<uint64_t>(delta);
+      this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
     }
   }
 #else
-  // Fallback: výpočet z dt mezi dvěma update() (loop jitter může ovlivnit přesnost)
   const pulse_counter_t raw = this->storage_->read_raw_value();
   const uint64_t t = static_cast<uint64_t>(micros());
 
@@ -355,25 +326,15 @@ void PulseCounterSensor::update() {
     if (dt > 0) {
       const double ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(dt);
       if (std::isfinite(ppm)) {
-        float out = static_cast<float>(ppm);
-        if (this->ema_alpha_ > 0.0f && this->ema_alpha_ <= 1.0f) {
-          if (!std::isfinite(this->ema_state_))
-            this->ema_state_ = out;
-          else
-            this->ema_state_ = this->ema_state_ + this->ema_alpha_ * (out - this->ema_state_);
-          out = this->ema_state_;
-        }
-        this->publish_state(out);
+        this->publish_state(static_cast<float>(ppm));
       }
     }
   }
   this->last_time_us_ = t;
 
-  if (this->total_sensor_ != nullptr) {
-    if (raw > 0) {
-      this->current_total_ += static_cast<uint64_t>(raw);
-      this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
-    }
+  if (this->total_sensor_ != nullptr && raw > 0) {
+    this->current_total_ += static_cast<uint64_t>(raw);
+    this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
   }
 #endif
 }

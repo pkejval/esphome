@@ -51,7 +51,6 @@ struct BasicPulseCounterStorage : public PulseCounterStorageBase {
 };
 
 #ifdef HAS_PCNT
-// HW PCNT – čtení & nulování oknem
 struct HwPulseCounterStorage : public PulseCounterStorageBase {
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;
@@ -75,39 +74,29 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   void set_filter_us(uint32_t filter) { storage_->filter_us = filter; }
   void set_total_sensor(sensor::Sensor *total_sensor) { total_sensor_ = total_sensor; }
 
-  // Volitelné vyhlazení EMA (0 = vypnuto)
-  void set_ema_alpha(float alpha) { ema_alpha_ = alpha; }
-
   void set_total_pulses(uint32_t pulses);
 
   void setup() override;
   void update() override;
   void dump_config() override;
-
-  // Při změně intervalu restartujeme timer (ESP32)
   void set_update_interval(uint32_t update_interval) override;
 
  protected:
-  static void timer_callback(void *arg);  // periodické vzorkování mimo main loop
+  static void timer_callback(void *arg);  // Periodické vzorkování mimo hlavní loop
 
   InternalGPIOPin *pin_{nullptr};
   std::unique_ptr<PulseCounterStorageBase> storage_;
   uint64_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};
 
-  // EMA konfigurace (0 => vypnuto)
-  float ema_alpha_{0.0f};
-  float ema_state_{NAN};
-
 #if defined(USE_ESP32)
   esp_timer_handle_t timer_handle_{nullptr};
-  std::atomic<float> last_calculated_ppm_{NAN};  // poslední vypočtená (příp. EMA) hodnota
-  std::atomic<bool> new_value_ready_{false};     // flag pro publish
-  std::atomic<int32_t> pending_total_delta_{0};  // bezpečný přenos přírůstku "total"
-  uint64_t last_tick_us_{0};                     // čas posledního vzorku (pro reálné dt)
+  std::atomic<float> last_calculated_ppm_{NAN};
+  std::atomic<bool> new_value_ready_{false};
+  std::atomic<int32_t> pending_total_delta_{0};
+  uint64_t last_tick_us_{0};  // Reálný čas posledního vzorku (esp_timer_get_time)
 #else
-  // Fallback pro non-ESP32
-  uint64_t last_time_us_{0};
+  uint64_t last_time_us_{0};  // Fallback pro non-ESP32
 #endif
 };
 
