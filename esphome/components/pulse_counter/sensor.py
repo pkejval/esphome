@@ -22,7 +22,7 @@ from esphome.core import CORE
 
 CONF_USE_PCNT = "use_pcnt"
 
-LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.8   # ESP32 a ESP32-S2
+LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.0   # ESP32 a ESP32-S2
 MODERN_ESP32_PCNT_FILTER_LIMIT_US = 819.0  # ESP32-S3, C3, C6, H2
 
 _CONF_INTERNAL_FILTER_CLAMPED_US = "_internal_filter_clamped_us"
@@ -65,7 +65,7 @@ def validate_internal_filter(config):
         is_legacy = variant in ("ESP32", "ESP32S2")
         limit = LEGACY_ESP32_PCNT_FILTER_LIMIT_US if is_legacy else MODERN_ESP32_PCNT_FILTER_LIMIT_US
 
-        # Clamp to HW limit 12.8us (ESP32, ESP32-S2)
+        # Clamp to HW limit (ESP32, ESP32-S2)
         clamped = min(filter_us, limit)
         config[_CONF_INTERNAL_FILTER_CLAMPED_US] = clamped
 
@@ -114,7 +114,7 @@ CONFIG_SCHEMA = cv.All(
                 validate_count_mode,
             ),
             cv.SplitDefault(CONF_USE_PCNT, esp32=True): cv.boolean,
-            cv.Optional(CONF_INTERNAL_FILTER, default="12.8us"): cv.positive_time_period_microseconds,
+            cv.Optional(CONF_INTERNAL_FILTER, default="12us"): cv.positive_time_period_microseconds,
             cv.Optional(CONF_TOTAL): sensor.sensor_schema(
                 unit_of_measurement=UNIT_PULSES,
                 icon=ICON_PULSE,
