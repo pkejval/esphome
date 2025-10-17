@@ -13,7 +13,6 @@ namespace esphome {
 namespace pulse_counter {
 
 static const char *const TAG = "pulse_counter";
-
 static const char *const EDGE_MODE_TO_STRING[] = {"DISABLE", "INCREMENT", "DECREMENT"};
 
 #ifdef HAS_PCNT
@@ -167,7 +166,6 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
   err = pcnt_unit_clear_count(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
-    // vrátíme hodnotu i při chybě clear
   }
 
   return static_cast<pulse_counter_t>(value);
@@ -217,7 +215,7 @@ void PulseCounterSensor::timer_callback(void *arg) {
   self->last_tick_us_ = t;
 
   if (raw != 0) {
-    self->pending_total_delta_.fetch_add(raw, std::memory_order_relaxed);
+    self->pending_total_delta_.fetch_add(static_cast<int64_t>(raw), std::memory_order_relaxed);
   }
 
   if (dt_us == 0)
@@ -253,7 +251,7 @@ void PulseCounterSensor::setup() {
 
   uint64_t period_us = static_cast<uint64_t>(this->get_update_interval()) * 1000ULL;
   if (period_us == 0)
-    period_us = 10000ULL;  // 10 ms bezpečné minimum
+    period_us = 10000ULL;  // 10 ms
 
   err = esp_timer_start_periodic(this->timer_handle_, period_us);
   if (err != ESP_OK) {
@@ -262,6 +260,12 @@ void PulseCounterSensor::setup() {
     return;
   }
 #endif
+
+  // Publikuj počáteční total (např. 0 nebo nastavený přes set_total_pulses)
+  if (this->total_sensor_ != nullptr) {
+    this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+    this->total_ever_published_ = true;
+  }
 }
 
 void PulseCounterSensor::set_update_interval(uint32_t update_interval) {
@@ -284,8 +288,10 @@ void PulseCounterSensor::set_update_interval(uint32_t update_interval) {
 
 void PulseCounterSensor::set_total_pulses(uint32_t pulses) {
   this->current_total_ = static_cast<uint64_t>(pulses);
-  if (this->total_sensor_ != nullptr)
+  if (this->total_sensor_ != nullptr) {
     this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+    this->total_ever_published_ = true;
+  }
 }
 
 void PulseCounterSensor::dump_config() {
@@ -311,10 +317,13 @@ void PulseCounterSensor::update() {
   }
 
   if (this->total_sensor_ != nullptr) {
-    const int32_t delta = this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
-    if (delta > 0) {
-      this->current_total_ += static_cast<uint64_t>(delta);
+    const int64_t delta = this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
+    if (delta != 0 || !this->total_ever_published_) {
+      if (delta > 0) {
+        this->current_total_ += static_cast<uint64_t>(delta);
+      }
       this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+      this->total_ever_published_ = true;
     }
   }
 #else
@@ -332,9 +341,14 @@ void PulseCounterSensor::update() {
   }
   this->last_time_us_ = t;
 
-  if (this->total_sensor_ != nullptr && raw > 0) {
-    this->current_total_ += static_cast<uint64_t>(raw);
-    this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+  if (this->total_sensor_ != nullptr) {
+    if (raw > 0) {
+      this->current_total_ += static_cast<uint64_t>(raw);
+    }
+    if (!this->total_ever_published_ || raw > 0) {
+      this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+      this->total_ever_published_ = true;
+    }
   }
 #endif
 }

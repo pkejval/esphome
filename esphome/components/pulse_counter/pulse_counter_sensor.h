@@ -82,21 +82,22 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   void set_update_interval(uint32_t update_interval) override;
 
  protected:
-  static void timer_callback(void *arg);  // Periodické vzorkování mimo hlavní loop
+  static void timer_callback(void *arg);
 
   InternalGPIOPin *pin_{nullptr};
   std::unique_ptr<PulseCounterStorageBase> storage_;
   uint64_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};
+  bool total_ever_published_{false};
 
 #if defined(USE_ESP32)
   esp_timer_handle_t timer_handle_{nullptr};
   std::atomic<float> last_calculated_ppm_{NAN};
   std::atomic<bool> new_value_ready_{false};
-  std::atomic<int32_t> pending_total_delta_{0};
-  uint64_t last_tick_us_{0};  // Reálný čas posledního vzorku (esp_timer_get_time)
+  std::atomic<int64_t> pending_total_delta_{0};
+  uint64_t last_tick_us_{0};
 #else
-  uint64_t last_time_us_{0};  // Fallback pro non-ESP32
+  uint64_t last_time_us_{0};
 #endif
 };
 
