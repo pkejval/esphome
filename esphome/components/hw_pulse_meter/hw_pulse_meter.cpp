@@ -3,152 +3,335 @@
 #ifdef USE_ESP32
 
 #include "esphome/core/log.h"
-#include <driver/pulse_cnt.h>
-#include <limits.h>
+#include <limits>
+#include <cmath>
 
 namespace esphome {
 namespace hw_pulse_meter {
 
 static const char *const TAG = "hw_pulse_meter";
 
+// ---------- Edge mapping ----------
+pcnt_channel_edge_action_t HWPulseMeter::map_edge_rising_(CountMode m) {
+  switch (m) {
+    case RISING:
+      return PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+    case FALLING:
+      return PCNT_CHANNEL_EDGE_ACTION_HOLD;
+    case BOTH:
+      return PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+    default:
+      return PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  }
+}
+pcnt_channel_edge_action_t HWPulseMeter::map_edge_falling_(CountMode m) {
+  switch (m) {
+    case RISING:
+      return PCNT_CHANNEL_EDGE_ACTION_HOLD;
+    case FALLING:
+      return PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+    case BOTH:
+      return PCNT_CHANNEL_EDGE_ACTION_INCREASE;
+    default:
+      return PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  }
+}
+
+// ---------- Setup ----------
 void HWPulseMeter::setup() {
-  if (pin_ == nullptr) { this->mark_failed(); return; }
+  if (this->pin_ == nullptr) {
+    ESP_LOGE(TAG, "No pin configured");
+    this->mark_failed();
+    return;
+  }
+  this->pin_->setup();
 
-  pin_->setup();
+  if (!this->init_pcnt_()) {
+    this->mark_failed();
+    return;
+  }
+  this->apply_glitch_filter_();
 
-  if (!this->init_pcnt_()) { this->mark_failed(); return; }
-  this->configure_pcnt_internal_filter_();
+  // Inicializace časů a stavů
+  this->last_pulse_time_us_ = 0;
+  this->last_rev_time_us_ = 0;
+  this->current_total_ = 0;
+  this->last_revolutions_pub_ = 0;
+  this->idle_zero_published_ = false;
+  this->total_ever_published_ = false;
 
-  last_change_us_ = 0;
-  last_pub_us_ = 0;
-  cumulative_total_ = 0;
-  last_published_total_ = 0;
-  last_revolutions_pub_ = 0;
-  idle_zero_published_ = false;
+  this->pending_total_delta_.store(0, std::memory_order_relaxed);
+  this->pending_pulses_since_rev_.store(0, std::memory_order_relaxed);
+  this->last_calculated_ppm_.store(NAN, std::memory_order_relaxed);
+  this->new_value_ready_.store(false, std::memory_order_relaxed);
 
-  int32_t start_raw = 0;
-  if (this->read_pcnt_total_(start_raw)) last_pcnt_total_raw_ = start_raw;
-  else last_pcnt_total_raw_ = 0;
+  // Spuštění interního tikacího timeru (10 ms)
+  if (!this->start_timer_(TIMER_PERIOD_US)) {
+    this->mark_failed();
+    return;
+  }
 }
 
 bool HWPulseMeter::init_pcnt_() {
+  // Vytvořit unit
   pcnt_unit_config_t unit_cfg{};
-  unit_cfg.low_limit  = INT16_MIN;
-  unit_cfg.high_limit = INT16_MAX;
+  unit_cfg.low_limit = std::numeric_limits<int16_t>::min();
+  unit_cfg.high_limit = std::numeric_limits<int16_t>::max();
 
-  pcnt_unit_handle_t unit_h = nullptr;
-  if (pcnt_new_unit(&unit_cfg, &unit_h) != ESP_OK || unit_h == nullptr) return false;
-  this->unit_ = unit_h;
+  if (pcnt_new_unit(&unit_cfg, &this->unit_) != ESP_OK || this->unit_ == nullptr) {
+    ESP_LOGE(TAG, "pcnt_new_unit failed");
+    return false;
+  }
 
-  const int gpio_num = (int) pin_->get_pin();
-
+  // Vytvořit channel
   pcnt_chan_config_t ch_cfg{};
-  ch_cfg.edge_gpio_num  = gpio_num;
+  ch_cfg.edge_gpio_num = this->pin_->get_pin();
   ch_cfg.level_gpio_num = -1;
 
-  pcnt_channel_handle_t ch_h = nullptr;
-  if (pcnt_new_channel(unit_h, &ch_cfg, &ch_h) != ESP_OK || ch_h == nullptr) return false;
-  this->channel_ = ch_h;
+  if (pcnt_new_channel(this->unit_, &ch_cfg, &this->channel_) != ESP_OK || this->channel_ == nullptr) {
+    ESP_LOGE(TAG, "pcnt_new_channel failed");
+    return false;
+  }
 
-  pcnt_channel_edge_action_t pos_act =
-      (count_mode_ != FALLING) ? PCNT_CHANNEL_EDGE_ACTION_INCREASE : PCNT_CHANNEL_EDGE_ACTION_HOLD;
-  pcnt_channel_edge_action_t neg_act =
-      (count_mode_ != RISING)  ? PCNT_CHANNEL_EDGE_ACTION_INCREASE : PCNT_CHANNEL_EDGE_ACTION_HOLD;
+  // Nastavit edge akce dle count_mode
+  if (pcnt_channel_set_edge_action(this->channel_, map_edge_rising_(this->count_mode_),
+                                   map_edge_falling_(this->count_mode_)) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_channel_set_edge_action failed");
+    return false;
+  }
 
-  if (pcnt_channel_set_edge_action(ch_h, pos_act, neg_act) != ESP_OK) return false;
+  // Udržet level action (nezáleží nám na levelu)
+  if (pcnt_channel_set_level_action(this->channel_, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_KEEP) !=
+      ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_channel_set_level_action failed");
+    return false;
+  }
 
-  if (pcnt_unit_enable(unit_h) != ESP_OK) return false;
-  if (pcnt_unit_clear_count(unit_h) != ESP_OK) return false;
-  if (pcnt_unit_start(unit_h) != ESP_OK) return false;
-
+  // Enable / clear / start
+  if (pcnt_unit_enable(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_enable failed");
+    return false;
+  }
+  if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
+    return false;
+  }
+  if (pcnt_unit_start(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_start failed");
+    return false;
+  }
   return true;
 }
 
-void HWPulseMeter::configure_pcnt_internal_filter_() {
-  pcnt_unit_handle_t unit_h = reinterpret_cast<pcnt_unit_handle_t>(this->unit_);
-  if (unit_h == nullptr) return;
-
-  uint32_t clamped_us = internal_filter_us_;
-  if (clamped_us > 13) clamped_us = 13;
+void HWPulseMeter::apply_glitch_filter_() {
+  if (this->unit_ == nullptr)
+    return;
   pcnt_glitch_filter_config_t gf{};
-  gf.max_glitch_ns = (uint32_t)((uint64_t) clamped_us * 1000ULL);
-  (void) pcnt_unit_set_glitch_filter(unit_h, &gf);
+  gf.max_glitch_ns = static_cast<uint64_t>(this->internal_filter_us_applied_) * 1000ULL;
+  esp_err_t err = pcnt_unit_set_glitch_filter(this->unit_, &gf);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "pcnt_unit_set_glitch_filter failed: %s", esp_err_to_name(err));
+  }
 }
 
-bool HWPulseMeter::read_pcnt_total_(int32_t &out) {
-  pcnt_unit_handle_t unit_h = reinterpret_cast<pcnt_unit_handle_t>(this->unit_);
-  if (unit_h == nullptr) return false;
-  int value = 0;
-  if (pcnt_unit_get_count(unit_h, &value) != ESP_OK) return false;
-  out = (int32_t) value;
+// ---------- Timer ----------
+void HWPulseMeter::timer_callback_(void *arg) {
+  auto *self = static_cast<HWPulseMeter *>(arg);
+  if (self == nullptr)
+    return;
+
+  int32_t raw = 0;
+  if (!self->read_and_clear_pcnt_(raw))
+    return;
+
+  const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+
+  if (raw > 0) {
+    // Total delta
+    self->pending_total_delta_.fetch_add(static_cast<int64_t>(raw), std::memory_order_relaxed);
+
+    // Idle tracking
+    self->last_pulse_time_us_ = now_us;
+    self->idle_zero_published_ = false;
+
+    // Revoluční akumulace
+    uint32_t added = static_cast<uint32_t>(raw);
+    uint32_t prev = self->pending_pulses_since_rev_.load(std::memory_order_relaxed);
+    uint32_t now = prev + added;
+    self->pending_pulses_since_rev_.store(now, std::memory_order_relaxed);
+
+    // Máme celé otáčky?
+    const uint32_t ppr = self->pulses_per_revolution_;
+    if (ppr > 0 && now >= ppr) {
+      // Kolik celých otáček právě padlo
+      const uint32_t revs = now / ppr;
+
+      // Čas od poslední publikované otáčky
+      const uint64_t last_rev_t = self->last_rev_time_us_;
+      if (last_rev_t != 0) {
+        const uint64_t dt_us = (now_us > last_rev_t) ? (now_us - last_rev_t) : 0ULL;
+        if (dt_us > 0) {
+          // PPM = (pulses per minute) = (revs * ppr) * 60e6 / dt_us
+          const double pulses = static_cast<double>(revs) * static_cast<double>(ppr);
+          const double ppm = (pulses * 60000000.0) / static_cast<double>(dt_us);
+          if (std::isfinite(ppm)) {
+            self->last_calculated_ppm_.store(static_cast<float>(ppm), std::memory_order_relaxed);
+            self->new_value_ready_.store(true, std::memory_order_release);
+          }
+        }
+      }
+      // Posunout "čas poslední otáčky" na aktuální okamžik publikace
+      self->last_rev_time_us_ = now_us;
+
+      // Odečíst celé otáčky z akumulovaných pulsů (ponechat zbytek)
+      const uint32_t leftover = now % ppr;
+      self->pending_pulses_since_rev_.store(leftover, std::memory_order_relaxed);
+    } else if (self->last_rev_time_us_ == 0) {
+      // První pulzy po bootu – startovní čas otáček
+      self->last_rev_time_us_ = now_us;
+    }
+  }
+}
+
+bool HWPulseMeter::start_timer_(uint64_t period_us) {
+  if (this->timer_ != nullptr) {
+    esp_timer_stop(this->timer_);
+    esp_timer_delete(this->timer_);
+    this->timer_ = nullptr;
+  }
+  esp_timer_create_args_t args{};
+  args.callback = &HWPulseMeter::timer_callback_;
+  args.arg = this;
+  args.dispatch_method = ESP_TIMER_TASK;
+  args.name = "hw_pulse_meter";
+
+  if (esp_timer_create(&args, &this->timer_) != ESP_OK || this->timer_ == nullptr) {
+    ESP_LOGE(TAG, "esp_timer_create failed");
+    return false;
+  }
+  if (esp_timer_start_periodic(this->timer_, period_us == 0 ? TIMER_PERIOD_US : period_us) != ESP_OK) {
+    ESP_LOGE(TAG, "esp_timer_start_periodic failed");
+    esp_timer_delete(this->timer_);
+    this->timer_ = nullptr;
+    return false;
+  }
   return true;
 }
 
-void HWPulseMeter::loop() {
-  const uint64_t now_us = esp_timer_get_time();
-
-  if (idle_timeout_us_ > 0 && last_change_us_ != 0) {
-    if ((now_us - last_change_us_) >= idle_timeout_us_ && !idle_zero_published_) {
-      if (publish_pps_ && pps_sensor_) pps_sensor_->publish_state(0.0f);
-      this->publish_state(0.0f);
-      idle_zero_published_ = true;
-      last_pub_us_ = now_us;
-      last_published_total_ = cumulative_total_;
-    }
+void HWPulseMeter::stop_timer_() {
+  if (this->timer_ != nullptr) {
+    esp_timer_stop(this->timer_);
+    esp_timer_delete(this->timer_);
+    this->timer_ = nullptr;
   }
-
-  int32_t total_now_raw = 0;
-  if (!this->read_pcnt_total_(total_now_raw)) return;
-
-  const uint16_t delta_u16 =
-      static_cast<uint16_t>(static_cast<uint16_t>(total_now_raw) - static_cast<uint16_t>(last_pcnt_total_raw_));
-  if (delta_u16 == 0) return;
-
-  last_pcnt_total_raw_ = total_now_raw;
-  cumulative_total_ += static_cast<uint32_t>(delta_u16);
-  idle_zero_published_ = false;
-  last_change_us_ = now_us;
-
-  if (publish_total_ && total_sensor_) total_sensor_->publish_state(static_cast<float>(cumulative_total_));
-
-  if (publish_revolutions_ && revolutions_sensor_) {
-    const uint64_t revs_now = cumulative_total_ / pulses_per_revolution_;
-    if (revs_now != last_revolutions_pub_) {
-      last_revolutions_pub_ = revs_now;
-      revolutions_sensor_->publish_state(static_cast<float>(revs_now));
-    }
-  }
-
-  const uint64_t since_pub = cumulative_total_ - last_published_total_;
-  if (since_pub < pulses_per_revolution_) return;
-
-  if (last_pub_us_ != 0) {
-    const float dt_s = float(now_us - last_pub_us_) / 1e6f;
-    if (dt_s > 0.0f) {
-      const float pps = float(since_pub) / dt_s;
-      if (publish_pps_ && pps_sensor_) pps_sensor_->publish_state(pps);
-
-      const float rps = (float(since_pub) / (float) pulses_per_revolution_) / dt_s;
-      this->publish_state(rps * 60.0f);
-    }
-  }
-
-  last_pub_us_ = now_us;
-  last_published_total_ = cumulative_total_;
 }
 
+// ---------- Helpers ----------
+bool HWPulseMeter::read_and_clear_pcnt_(int32_t &out) {
+  if (this->unit_ == nullptr)
+    return false;
+  int value = 0;
+  if (pcnt_unit_get_count(this->unit_, &value) != ESP_OK)
+    return false;
+  out = static_cast<int32_t>(value);
+  // Clear po přečtení
+  (void) pcnt_unit_clear_count(this->unit_);
+  return true;
+}
+
+void HWPulseMeter::handle_idle_zero_publish_(uint64_t now_us) {
+  if (this->idle_timeout_us_ == 0 || this->last_pulse_time_us_ == 0)
+    return;
+  if (this->idle_zero_published_)
+    return;
+
+  const uint64_t dt = now_us - this->last_pulse_time_us_;
+  if (dt >= this->idle_timeout_us_) {
+    // Publikovat nulu pro PPM (hlavní) a PPS (pokud je)
+    this->publish_state(0.0f);
+    if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
+      this->pps_sensor_->publish_state(0.0f);
+    }
+    this->idle_zero_published_ = true;
+  }
+}
+
+// ---------- Loop ----------
+void HWPulseMeter::loop() {
+  const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+
+  // 1) Idle zero při nečinnosti
+  this->handle_idle_zero_publish_(now_us);
+
+  // 2) Publikace TOTAL (pouze pokud přibyly pulzy)
+  if (this->publish_total_ && this->total_sensor_ != nullptr) {
+    const int64_t delta = this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
+    if (delta > 0) {
+      this->current_total_ += static_cast<uint64_t>(delta);
+      this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
+      this->total_ever_published_ = true;
+    }
+  } else {
+    // I když total nemáme, přesto "odebírej" pending delta, aby se nezasekávala
+    (void) this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
+  }
+
+  // 3) Publikace REVOLUTIONS (pouze při celé nové otáčce)
+  if (this->publish_revolutions_ && this->revolutions_sensor_ != nullptr) {
+    const uint32_t ppr = this->pulses_per_revolution_;
+    if (ppr > 0) {
+      const uint64_t revs_now = this->current_total_ / static_cast<uint64_t>(ppr);
+      if (revs_now != this->last_revolutions_pub_) {
+        this->last_revolutions_pub_ = revs_now;
+        this->revolutions_sensor_->publish_state(static_cast<float>(revs_now));
+      }
+    }
+  }
+
+  // 4) Publikace PPM (hlavní senzor) a PPS (volitelně), jen při nové hodnotě
+  if (this->new_value_ready_.load(std::memory_order_acquire)) {
+    this->new_value_ready_.store(false, std::memory_order_release);
+    const float ppm = this->last_calculated_ppm_.load(std::memory_order_relaxed);
+    if (std::isfinite(ppm)) {
+      this->publish_state(ppm);
+      if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
+        // PPS = PPM / 60
+        this->pps_sensor_->publish_state(ppm / 60.0f);
+      }
+    }
+  }
+}
+
+// ---------- Dump & Dtor ----------
 void HWPulseMeter::dump_config() {
-  ESP_LOGCONFIG(TAG, "HW Pulse Meter (pulse_cnt)");
-  if (pin_) ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", pin_->get_pin());
-  ESP_LOGCONFIG(TAG, "  Count mode: %s",
-                count_mode_ == RISING ? "RISING" : (count_mode_ == FALLING ? "FALLING" : "BOTH"));
-  ESP_LOGCONFIG(TAG, "  Internal filter: %u us", (unsigned) internal_filter_us_);
-  ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) idle_timeout_us_);
-  ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) pulses_per_revolution_);
-  ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s",
-                publish_total_ ? "yes" : "no",
-                publish_pps_ ? "yes" : "no",
-                publish_revolutions_ ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "HW Pulse Meter (PCNT)");
+  if (this->pin_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", this->pin_->get_pin());
+  }
+  const char *mode_str = (this->count_mode_ == RISING) ? "RISING" : (this->count_mode_ == FALLING) ? "FALLING" : "BOTH";
+  ESP_LOGCONFIG(TAG, "  Count mode: %s", mode_str);
+  ESP_LOGCONFIG(TAG, "  Internal filter (requested/applied): %u us / %u us",
+                (unsigned) this->internal_filter_us_requested_, (unsigned) this->internal_filter_us_applied_);
+  ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) this->idle_timeout_us_);
+  ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) this->pulses_per_revolution_);
+  ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s", this->publish_total_ ? "yes" : "no",
+                this->publish_pps_ ? "yes" : "no", this->publish_revolutions_ ? "yes" : "no");
+}
+
+HWPulseMeter::~HWPulseMeter() {
+  this->stop_timer_();
+
+  if (this->unit_ != nullptr) {
+    (void) pcnt_unit_stop(this->unit_);
+  }
+  if (this->channel_ != nullptr) {
+    (void) pcnt_del_channel(this->channel_);
+    this->channel_ = nullptr;
+  }
+  if (this->unit_ != nullptr) {
+    (void) pcnt_del_unit(this->unit_);
+    this->unit_ = nullptr;
+  }
 }
 
 }  // namespace hw_pulse_meter
