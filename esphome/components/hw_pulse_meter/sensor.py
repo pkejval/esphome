@@ -29,7 +29,6 @@ CONF_PPR = "pulses_per_revolution"
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
 CONF_REVS = "revolutions"
-CONF_SAMPLE_PERIOD = "sample_period"
 
 LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.0  # ESP32, ESP32-S2
 MODERN_ESP32_PCNT_FILTER_LIMIT_US = 819.0  # ESP32-S3, C3, C6, H2
@@ -57,14 +56,6 @@ def _validate_internal_filter(v):
     return t
 
 
-def _validate_sample_period(v):
-    t = cv.positive_time_period_milliseconds(v)
-    ms = int(t.total_milliseconds)
-    if ms < 1 or ms > 1000:
-        raise cv.Invalid("sample_period must be between 1ms and 1000ms")
-    return t
-
-
 CONFIG_SCHEMA = sensor.sensor_schema(
     HWPulseMeter,
     unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE,  # hlavní senzor = RPM
@@ -79,7 +70,6 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_INTERNAL_FILTER, default="12us"): _validate_internal_filter,
         cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
-        cv.Optional(CONF_SAMPLE_PERIOD, default="50ms"): _validate_sample_period,
         cv.Optional(CONF_TOTAL): sensor.sensor_schema(
             unit_of_measurement=UNIT_PULSES,
             accuracy_decimals=0,
@@ -115,10 +105,6 @@ async def to_code(config):
 
     cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
-
-    # sample_period (ms -> us)
-    sp = config[CONF_SAMPLE_PERIOD]
-    cg.add(var.set_sample_period_us(sp.total_milliseconds * 1000))
 
     publish_total = CONF_TOTAL in config
     publish_pps = CONF_PPS in config
