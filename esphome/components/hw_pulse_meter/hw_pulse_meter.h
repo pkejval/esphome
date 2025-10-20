@@ -40,11 +40,6 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   void set_pps_sensor(sensor::Sensor *s) { pps_sensor_ = s; }
   void set_revolutions_sensor(sensor::Sensor *s) { revolutions_sensor_ = s; }
 
-  void set_poll_interval_us(uint32_t us) {
-    poll_interval_us_ = us;
-    use_polling_ = (us > 0);
-  }
-
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -57,11 +52,12 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   static pcnt_channel_edge_action_t map_edge_rising_(CountMode m);
   static pcnt_channel_edge_action_t map_edge_falling_(CountMode m);
 
+  // ISR: doručí timestamp do fronty
   static bool IRAM_ATTR on_reach_isr_(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_data);
 
-  // Polling task
-  static void poll_task_trampoline_(void *param);
-  void poll_task_();
+  // Worker task: zpracuje události a re-armuje PCNT
+  static void worker_task_trampoline_(void *param);
+  void worker_task_();
 
   InternalGPIOPin *pin_{nullptr};
   CountMode count_mode_{RISING};
@@ -78,15 +74,8 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   pcnt_unit_handle_t unit_{nullptr};
   pcnt_channel_handle_t channel_{nullptr};
 
-  // ISR režim
-  QueueHandle_t evt_queue_{nullptr};
-
-  // Polling režim
-  bool use_polling_{false};
-  uint32_t poll_interval_us_{0};
-  TaskHandle_t poll_task_handle_{nullptr};
-  uint32_t carry_pulses_{0};
-  uint64_t last_poll_time_us_{0};
+  QueueHandle_t evt_queue_{nullptr};  // timestampy (µs) celých otáček
+  TaskHandle_t worker_task_handle_{nullptr};
 
   uint64_t last_rev_time_us_{0};
   uint64_t last_event_time_us_{0};

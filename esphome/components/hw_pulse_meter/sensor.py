@@ -29,10 +29,9 @@ CONF_PPR = "pulses_per_revolution"
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
 CONF_REVS = "revolutions"
-CONF_POLL_INTERVAL = "poll_interval"
 
-LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.0  # ESP32, ESP32-S2
-MODERN_ESP32_PCNT_FILTER_LIMIT_US = 819.0  # ESP32-S3, C3, C6, H2
+LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.0
+MODERN_ESP32_PCNT_FILTER_LIMIT_US = 819.0
 
 
 def _get_esp32_variant():
@@ -71,7 +70,6 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_INTERNAL_FILTER, default="12us"): _validate_internal_filter,
         cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
-        cv.Optional(CONF_POLL_INTERVAL, default="0s"): cv.time_period_microseconds,
         cv.Optional(CONF_TOTAL): sensor.sensor_schema(
             unit_of_measurement=UNIT_PULSES,
             accuracy_decimals=0,
@@ -107,9 +105,6 @@ async def to_code(config):
 
     cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
-
-    poll_us = int(config[CONF_POLL_INTERVAL].total_microseconds)
-    cg.add(var.set_poll_interval_us(poll_us))
 
     publish_total = CONF_TOTAL in config
     publish_pps = CONF_PPS in config

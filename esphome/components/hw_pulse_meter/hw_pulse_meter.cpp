@@ -87,27 +87,27 @@ void HWPulseMeter::setup() {
 
   this->apply_glitch_filter_();
 
-  if (!use_polling_) {
-    // ISR režim
-    evt_queue_ = xQueueCreate(32, sizeof(uint64_t));
-    if (evt_queue_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to create event queue");
-      this->mark_failed();
-      return;
-    }
-    const int watch_val = static_cast<int>(this->pulses_per_revolution_);
-    if (pcnt_unit_add_watch_point(this->unit_, watch_val) != ESP_OK) {
-      ESP_LOGE(TAG, "pcnt_unit_add_watch_point(%d) failed", watch_val);
-      this->mark_failed();
-      return;
-    }
-    pcnt_event_callbacks_t cbs{};
-    cbs.on_reach = &HWPulseMeter::on_reach_isr_;
-    if (pcnt_unit_register_event_callbacks(this->unit_, &cbs, this) != ESP_OK) {
-      ESP_LOGE(TAG, "pcnt_unit_register_event_callbacks failed");
-      this->mark_failed();
-      return;
-    }
+  // Fronta timestampů pro celé otáčky (watchpoint hits)
+  evt_queue_ = xQueueCreate(32, sizeof(uint64_t));
+  if (evt_queue_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create event queue");
+    this->mark_failed();
+    return;
+  }
+
+  const int watch_val = static_cast<int>(this->pulses_per_revolution_);
+  if (pcnt_unit_add_watch_point(this->unit_, watch_val) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_add_watch_point(%d) failed", watch_val);
+    this->mark_failed();
+    return;
+  }
+
+  pcnt_event_callbacks_t cbs{};
+  cbs.on_reach = &HWPulseMeter::on_reach_isr_;
+  if (pcnt_unit_register_event_callbacks(this->unit_, &cbs, this) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_register_event_callbacks failed");
+    this->mark_failed();
+    return;
   }
 
   if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
@@ -129,21 +129,18 @@ void HWPulseMeter::setup() {
   const uint64_t t0 = static_cast<uint64_t>(esp_timer_get_time());
   last_rev_time_us_ = t0;
   last_event_time_us_ = t0;
-  last_poll_time_us_ = t0;
   idle_zero_sent_ = false;
   current_total_pulses_ = 0;
   current_total_revs_ = 0;
-  carry_pulses_ = 0;
 
-  if (use_polling_) {
-    const UBaseType_t prio = (tskIDLE_PRIORITY + 3);
-    const uint32_t stack = 4096;  // stack depth (words) v ESP-IDF FreeRTOS
-    if (xTaskCreate(HWPulseMeter::poll_task_trampoline_, "pcnt_poll", stack, this, prio, &poll_task_handle_) !=
-        pdPASS) {
-      ESP_LOGE(TAG, "Failed to create polling task");
-      this->mark_failed();
-      return;
-    }
+  // Worker task: zpracovává události a re-armuje PCNT
+  const UBaseType_t prio = (tskIDLE_PRIORITY + 3);
+  const uint32_t stack_words = 4096;
+  if (xTaskCreate(HWPulseMeter::worker_task_trampoline_, "pcnt_worker", stack_words, this, prio,
+                  &worker_task_handle_) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create worker task");
+    this->mark_failed();
+    return;
   }
 }
 
@@ -159,16 +156,15 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t /*unit*/, const pc
   return hpw == pdTRUE;
 }
 
-void HWPulseMeter::loop() {
-  if (use_polling_) {
-    return;
-  }
+void HWPulseMeter::worker_task_trampoline_(void *param) { static_cast<HWPulseMeter *>(param)->worker_task_(); }
 
-  uint64_t t_us = 0;
-  bool any = false;
+void HWPulseMeter::worker_task_() {
+  for (;;) {
+    uint64_t t_us = 0;
+    if (xQueueReceive(this->evt_queue_, &t_us, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
 
-  while (xQueueReceive(this->evt_queue_, &t_us, 0) == pdTRUE) {
-    any = true;
     const uint64_t now_us = t_us;
 
     if (now_us > this->last_rev_time_us_) {
@@ -176,7 +172,6 @@ void HWPulseMeter::loop() {
       if (dt_s > 0.0) {
         const double rpm = (1.0 / dt_s) * 60.0;
         this->publish_state(static_cast<float>(rpm));
-
         if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
           const double pps = static_cast<double>(this->pulses_per_revolution_) / dt_s;
           this->pps_sensor_->publish_state(static_cast<float>(pps));
@@ -195,13 +190,13 @@ void HWPulseMeter::loop() {
       this->revolutions_sensor_->publish_state(static_cast<float>(this->current_total_revs_));
     if (this->publish_total_ && this->total_sensor_ != nullptr)
       this->total_sensor_->publish_state(static_cast<float>(this->current_total_pulses_));
-  }
 
-  if (any) {
     (void) pcnt_unit_clear_count(this->unit_);
   }
+}
 
-  if (!any && this->idle_timeout_us_ > 0 && this->last_event_time_us_ != 0 && !this->idle_zero_sent_) {
+void HWPulseMeter::loop() {
+  if (this->idle_timeout_us_ > 0 && this->last_event_time_us_ != 0 && !this->idle_zero_sent_) {
     const uint64_t now = static_cast<uint64_t>(esp_timer_get_time());
     if ((now - this->last_event_time_us_) >= this->idle_timeout_us_) {
       this->publish_state(0.0f);
@@ -212,96 +207,24 @@ void HWPulseMeter::loop() {
   }
 }
 
-void HWPulseMeter::poll_task_trampoline_(void *param) { static_cast<HWPulseMeter *>(param)->poll_task_(); }
-
-void HWPulseMeter::poll_task_() {
-  TickType_t last_wake = xTaskGetTickCount();
-  const uint32_t tick_us = (1000000UL / configTICK_RATE_HZ);
-  TickType_t period_ticks = (TickType_t) (poll_interval_us_ / tick_us);
-  if (period_ticks < 1)
-    period_ticks = 1;
-
-  for (;;) {
-    vTaskDelayUntil(&last_wake, period_ticks);
-
-    int count = 0;
-    if (pcnt_unit_get_count(this->unit_, &count) != ESP_OK)
-      continue;
-
-    const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
-    double dt_s = static_cast<double>(now_us - this->last_poll_time_us_) / 1e6;
-    if (dt_s <= 0.0)
-      dt_s = static_cast<double>(period_ticks) / configTICK_RATE_HZ;
-
-    uint32_t pulses = (count >= 0) ? static_cast<uint32_t>(count) : 0u;
-    uint64_t total_pulses_interval = static_cast<uint64_t>(carry_pulses_) + static_cast<uint64_t>(pulses);
-
-    uint32_t rev_delta = static_cast<uint32_t>(total_pulses_interval / this->pulses_per_revolution_);
-    carry_pulses_ = static_cast<uint32_t>(total_pulses_interval % this->pulses_per_revolution_);
-
-    if (pulses > 0) {
-      last_event_time_us_ = now_us;
-    }
-
-    if (rev_delta > 0) {
-      const double rpm = (static_cast<double>(rev_delta) / dt_s) * 60.0;
-      this->publish_state(static_cast<float>(rpm));
-      if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
-        const double pps = static_cast<double>(pulses) / dt_s;
-        this->pps_sensor_->publish_state(static_cast<float>(pps));
-      }
-      current_total_revs_ += rev_delta;
-      current_total_pulses_ += pulses;
-      if (this->publish_revolutions_ && this->revolutions_sensor_ != nullptr)
-        this->revolutions_sensor_->publish_state(static_cast<float>(this->current_total_revs_));
-      if (this->publish_total_ && this->total_sensor_ != nullptr)
-        this->total_sensor_->publish_state(static_cast<float>(this->current_total_pulses_));
-      idle_zero_sent_ = false;
-      last_rev_time_us_ = now_us;
-    } else {
-      if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
-        const double pps = static_cast<double>(pulses) / dt_s;
-        this->pps_sensor_->publish_state(static_cast<float>(pps));
-      }
-      current_total_pulses_ += pulses;
-
-      if (idle_timeout_us_ > 0 && !idle_zero_sent_) {
-        const uint64_t last = last_event_time_us_;
-        if (last != 0 && (now_us - last) >= idle_timeout_us_) {
-          this->publish_state(0.0f);
-          if (this->publish_pps_ && this->pps_sensor_ != nullptr)
-            this->pps_sensor_->publish_state(0.0f);
-          idle_zero_sent_ = true;
-        }
-      }
-    }
-
-    (void) pcnt_unit_clear_count(this->unit_);
-    this->last_poll_time_us_ = now_us;
-  }
-}
-
 void HWPulseMeter::dump_config() {
-  ESP_LOGCONFIG(TAG, "HW Pulse Meter (PCNT)");
+  ESP_LOGCONFIG(TAG, "HW Pulse Meter (PCNT precision mode)");
   if (this->pin_ != nullptr)
     ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", this->pin_->get_pin());
   const char *mode_str = (this->count_mode_ == RISING) ? "RISING" : (this->count_mode_ == FALLING) ? "FALLING" : "BOTH";
   ESP_LOGCONFIG(TAG, "  Count mode: %s", mode_str);
   ESP_LOGCONFIG(TAG, "  Internal filter (requested/applied): %u us / %u us",
                 (unsigned) this->internal_filter_us_requested_, (unsigned) this->internal_filter_us_applied_);
-  ESP_LOGCONFIG(TAG, "  Pulses per revolution: %u", (unsigned) this->pulses_per_revolution_);
+  ESP_LOGCONFIG(TAG, "  Watchpoint/PPR: %u", (unsigned) this->pulses_per_revolution_);
   ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) this->idle_timeout_us_);
   ESP_LOGCONFIG(TAG, "  Publish: total=%s, pps=%s, revs=%s", this->publish_total_ ? "yes" : "no",
                 this->publish_pps_ ? "yes" : "no", this->publish_revolutions_ ? "yes" : "no");
-  ESP_LOGCONFIG(TAG, "  Mode: %s", this->use_polling_ ? "POLLING" : "ISR");
-  if (this->use_polling_)
-    ESP_LOGCONFIG(TAG, "  Poll interval: %u us", (unsigned) this->poll_interval_us_);
 }
 
 HWPulseMeter::~HWPulseMeter() {
-  if (this->poll_task_handle_ != nullptr) {
-    vTaskDelete(this->poll_task_handle_);
-    this->poll_task_handle_ = nullptr;
+  if (this->worker_task_handle_ != nullptr) {
+    vTaskDelete(this->worker_task_handle_);
+    this->worker_task_handle_ = nullptr;
   }
   if (this->unit_ != nullptr)
     (void) pcnt_unit_stop(this->unit_);
