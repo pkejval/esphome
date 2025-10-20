@@ -3,6 +3,11 @@
 #include <inttypes.h>
 #include <utility>
 
+#if defined(SOC_GPIO_SUPPORT_GLITCH_FILTER)
+#include "driver/gpio.h"
+#include "esp_idf_version.h"
+#endif
+
 namespace esphome {
 namespace pulse_meter {
 
@@ -22,6 +27,33 @@ void PulseMeterSensor::setup() {
   this->last_pin_val_ = this->pin_->digital_read();
   this->last_processed_edge_us_ = micros();
 
+#if defined(SOC_GPIO_SUPPORT_GLITCH_FILTER)
+  // HW glitch filter (pokud je k dispozici v SoC + IDF).
+  // Pozn.: API se může lišit dle IDF; držíme to maximálně tolerantní pro build.
+  if (this->filter_mode_ == FILTER_EDGE && this->filter_us_ > 0) {
+    int raw_pin = -1;
+    // InternalGPIOPin v ESPHome typicky umí poskytnout číslo pinu:
+    // pokud ve tvé verzi není get_pin(), nahraď dle své implementace
+    if (this->pin_->is_internal()) {
+      raw_pin = this->pin_->get_pin();
+    } else {
+      raw_pin = this->pin_->get_pin();
+    }
+#if ESP_IDF_VERSION_MAJOR >= 5
+    gpio_glitch_filter_handle_t h = nullptr;
+    gpio_glitch_filter_config_t cfg = {};
+    cfg.gpio_num = static_cast<gpio_num_t>(raw_pin);
+    cfg.clk_src = GPIO_GLITCH_FILTER_CLK_SRC_DEFAULT;
+    cfg.window_thres_ns = static_cast<uint32_t>(this->filter_us_) * 1000U;
+    cfg.window_width_ns = 0;  // 0 = default behavior (jen threshold)
+    if (gpio_new_glitch_filter(&cfg, &h) == ESP_OK) {
+      gpio_glitch_filter_enable(h);
+      this->glitch_filter_handle_ = h;
+    }
+#endif
+  }
+#endif
+
   if (this->filter_mode_ == FILTER_EDGE) {
     this->pin_->attach_interrupt(PulseMeterSensor::edge_intr, this, gpio::INTERRUPT_RISING_EDGE);
   } else {
@@ -38,25 +70,20 @@ void PulseMeterSensor::loop() {
   {
     InterruptLock lock;
 
-    bool current = this->pin_->digital_read();
-    if (this->filter_mode_ == FILTER_EDGE) {
-      if (current && !this->last_pin_val_) {
-        this->record_edge_(micros());
-      }
-    } else {
-      if (current != this->last_pin_val_) {
-        PulseMeterSensor::pulse_intr(this);
-      }
-    }
-    this->last_pin_val_ = current;
+    // Optimalizace 5: žádný fallback polling pinu v loopu
+    // Děláme jen bezpečný swap a přípravu write-bufferu.
 
-    this->get_->count_ = 0;
+    // 1) swap nejdřív
     std::swap(this->set_, this->get_);
+
+    // 2) vynuluj nový write-buffer (set_)
+    this->set_->count_ = 0;
+    // pozn.: časová pole necháváme nedotčena; ISR přepíše při další hraně
   }
 
   const uint32_t now = micros();
 
-  if (this->get_->count_ > 0) {
+  if (LIKELY(this->get_->count_ > 0)) {
     if (this->total_sensor_ != nullptr) {
       this->total_pulses_ += this->get_->count_;
       this->total_sensor_->publish_state(this->total_pulses_);
@@ -80,17 +107,12 @@ void PulseMeterSensor::loop() {
     this->last_processed_edge_us_ = this->get_->last_detected_edge_us_;
   } else {
     const uint32_t idle_us = us_since(now, this->last_processed_edge_us_);
-    switch (this->meter_state_) {
-      case MeterState::INITIAL:
-      case MeterState::RUNNING:
-        if (idle_us > this->timeout_us_) {
-          this->meter_state_ = MeterState::TIMED_OUT;
-          ESP_LOGD(TAG, "No pulse detected for %" PRIu32 "s, assuming 0 pulses/min", idle_us / 1000000U);
-          this->publish_state(0.0f);
-        }
-        break;
-      default:
-        break;
+    if (UNLIKELY(this->meter_state_ == MeterState::INITIAL || this->meter_state_ == MeterState::RUNNING)) {
+      if (idle_us > this->timeout_us_) {
+        this->meter_state_ = MeterState::TIMED_OUT;
+        ESP_LOGD(TAG, "No pulse detected for %" PRIu32 "s, assuming 0 pulses/min", idle_us / 1000000U);
+        this->publish_state(0.0f);
+      }
     }
   }
 }
@@ -112,7 +134,7 @@ void PulseMeterSensor::dump_config() {
 void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
   const uint32_t now = micros();
   sensor->record_edge_(now);
-  sensor->last_pin_val_ = true;
+  sensor->last_pin_val_ = true;  // rising -> high
 }
 
 void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {

@@ -7,6 +7,13 @@
 
 #include <cinttypes>
 
+#ifndef LIKELY
+#define LIKELY(x) (__builtin_expect(!!(x), 1))
+#endif
+#ifndef UNLIKELY
+#define UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+
 namespace esphome {
 namespace pulse_meter {
 
@@ -79,6 +86,11 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
     bool latched_ = false;
   };
   PulseState pulse_state_{};
+
+#if defined(SOC_GPIO_SUPPORT_GLITCH_FILTER)
+  // držíme handle filtru, aby šel případně vypnout/deinit (nepovinné)
+  void *glitch_filter_handle_ = nullptr;  // typ zůstává ne-striktní, ať to neblokuje build na starších IDF
+#endif
 };
 
 }  // namespace pulse_meter
