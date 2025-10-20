@@ -5,7 +5,7 @@ from esphome.const import (
     CONF_PIN,
     ICON_PULSE,
     UNIT_PULSES,
-    UNIT_PULSES_PER_MINUTE,
+    UNIT_REVOLUTIONS_PER_MINUTE,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
 )
@@ -59,7 +59,7 @@ def _validate_internal_filter(v):
 
 CONFIG_SCHEMA = sensor.sensor_schema(
     HWPulseMeter,
-    unit_of_measurement=UNIT_PULSES_PER_MINUTE,  # hlavní senzor = PPM
+    unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE,  # hlavní senzor = RPM
     icon=ICON_PULSE,
     accuracy_decimals=2,
     state_class=STATE_CLASS_MEASUREMENT,

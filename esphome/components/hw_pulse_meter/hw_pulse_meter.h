@@ -88,9 +88,8 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   static constexpr uint64_t TIMER_PERIOD_US = 10000ULL;
 
   // Sdílené akumulátory mezi timerem a loopem
-  std::atomic<int64_t> pending_total_delta_{0};       // pulzy od minulé publikace
-  std::atomic<int64_t> pending_total_since_boot_{0};  // celkový přírůstek od bootu (pro robustní revs)
-  std::atomic<int64_t> pending_pulses_since_pub_{0};  // pulzy pro PPM od poslední publikace
+  std::atomic<int64_t> pending_total_delta_{0};       // pulzy od minulé publikace (pro total/revs)
+  std::atomic<int64_t> pending_pulses_since_pub_{0};  // pulzy od minulé publikace (pro RPM/pps)
 
   // Časy
   uint64_t last_pulse_time_us_{0};    // poslední detekovaný pulz (pro idle)

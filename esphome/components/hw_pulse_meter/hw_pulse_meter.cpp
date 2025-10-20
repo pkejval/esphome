@@ -59,7 +59,6 @@ void HWPulseMeter::setup() {
   this->ever_published_ = false;
 
   this->pending_total_delta_.store(0, std::memory_order_relaxed);
-  this->pending_total_since_boot_.store(0, std::memory_order_relaxed);
   this->pending_pulses_since_pub_.store(0, std::memory_order_relaxed);
 
   if (!this->start_timer_(TIMER_PERIOD_US)) {
@@ -138,7 +137,6 @@ void HWPulseMeter::timer_callback_(void *arg) {
 
   if (raw > 0) {
     self->pending_total_delta_.fetch_add(static_cast<int64_t>(raw), std::memory_order_relaxed);
-    self->pending_total_since_boot_.fetch_add(static_cast<int64_t>(raw), std::memory_order_relaxed);
     self->pending_pulses_since_pub_.fetch_add(static_cast<int64_t>(raw), std::memory_order_relaxed);
 
     self->last_pulse_time_us_ = now_us;
@@ -190,7 +188,7 @@ bool HWPulseMeter::read_and_clear_pcnt_(int32_t &out) {
   return true;
 }
 
-// Throttlovaná publikace všech senzorů
+// Throttlovaná publikace všech senzorů (hlavní = RPM)
 void HWPulseMeter::try_publish_throttled_(uint64_t now_us) {
   const uint64_t since_last_pub =
       this->ever_published_ ? (now_us - this->last_publish_time_us_) : this->min_publish_interval_us_;
@@ -201,15 +199,19 @@ void HWPulseMeter::try_publish_throttled_(uint64_t now_us) {
   const int64_t pulses = this->pending_pulses_since_pub_.exchange(0, std::memory_order_acq_rel);
   const int64_t total_delta = this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
 
-  float ppm_to_pub = NAN;
+  float rpm_to_pub = NAN;
   bool should_pub_zero = false;
 
   if (pulses > 0) {
     const double dt_us = static_cast<double>(since_last_pub);
     if (dt_us > 0.0) {
+      // PPM = pulses * 60e6 / dt_us
       const double ppm = (static_cast<double>(pulses) * 60000000.0) / dt_us;
-      if (std::isfinite(ppm))
-        ppm_to_pub = static_cast<float>(ppm);
+      // RPM = PPM / PPR
+      const uint32_t ppr = this->pulses_per_revolution_;
+      const double rpm = (ppr > 0) ? (ppm / static_cast<double>(ppr)) : ppm;
+      if (std::isfinite(rpm))
+        rpm_to_pub = static_cast<float>(rpm);
     }
   } else {
     if (this->idle_timeout_us_ > 0 && this->idle_zero_armed_ && this->last_pulse_time_us_ > 0) {
@@ -220,18 +222,20 @@ void HWPulseMeter::try_publish_throttled_(uint64_t now_us) {
     }
   }
 
-  if (std::isfinite(ppm_to_pub)) {
-    this->publish_state(ppm_to_pub);
+  if (std::isfinite(rpm_to_pub)) {
+    this->publish_state(rpm_to_pub);  // hlavní = RPM
     if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
-      this->pps_sensor_->publish_state(ppm_to_pub / 60.0f);
+      // PPS = pulses/second = PPM/60
+      const double pps = (static_cast<double>(pulses) * 1000000.0) / static_cast<double>(since_last_pub);
+      this->pps_sensor_->publish_state(static_cast<float>(pps));
     }
     this->idle_zero_armed_ = true;  // po publikaci platné hodnoty znovu povolíme idle nulu
   } else if (should_pub_zero) {
-    this->publish_state(0.0f);
+    this->publish_state(0.0f);  // hlavní = RPM → 0
     if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
       this->pps_sensor_->publish_state(0.0f);
     }
-    this->idle_zero_armed_ = false;  // nulu nebudeme spamovat každým intervalem
+    this->idle_zero_armed_ = false;  // nulu neposílat každým intervalem
   }
 
   if (this->publish_total_ && this->total_sensor_ != nullptr) {
@@ -240,7 +244,6 @@ void HWPulseMeter::try_publish_throttled_(uint64_t now_us) {
       this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
     }
   } else {
-    // pokud total nepoužíváme, přesto udržuj current_total_ pro revolutions
     if (total_delta > 0) {
       this->current_total_ += static_cast<uint64_t>(total_delta);
     }
@@ -278,8 +281,8 @@ void HWPulseMeter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) this->idle_timeout_us_);
   ESP_LOGCONFIG(TAG, "  Min publish interval: %u us", (unsigned) this->min_publish_interval_us_);
   ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) this->pulses_per_revolution_);
-  ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s", this->publish_total_ ? "yes" : "no",
-                this->publish_pps_ ? "yes" : "no", this->publish_revolutions_ ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "  Publishes: main=RPM, pps=%s, revolutions=%s, total=%s", this->publish_pps_ ? "yes" : "no",
+                this->publish_revolutions_ ? "yes" : "no", this->publish_total_ ? "yes" : "no");
 }
 
 HWPulseMeter::~HWPulseMeter() {
