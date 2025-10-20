@@ -50,7 +50,7 @@ void HWPulseMeter::setup() {
   this->apply_glitch_filter_();
 
   // fronta pro časové značky celých otáček
-  evt_queue_ = xQueueCreate(16, sizeof(uint64_t));
+  evt_queue_ = xQueueCreate(32, sizeof(uint64_t));
   if (evt_queue_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create event queue");
     this->mark_failed();
@@ -65,10 +65,30 @@ void HWPulseMeter::setup() {
     return;
   }
 
+  // registrace callbacků
   pcnt_event_callbacks_t cbs{};
   cbs.on_reach = &HWPulseMeter::on_reach_isr_;
   if (pcnt_unit_register_event_callbacks(this->unit_, &cbs, this) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_register_event_callbacks failed");
+    this->mark_failed();
+    return;
+  }
+
+  // nutné zapnout přerušení jednotky, jinak se callbacky nevolají
+  if (pcnt_unit_enable_intr(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_enable_intr failed");
+    this->mark_failed();
+    return;
+  }
+
+  // nastartovat jednotku až po watchpointu/callbacku/interruptu
+  if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
+    this->mark_failed();
+    return;
+  }
+  if (pcnt_unit_start(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_start failed");
     this->mark_failed();
     return;
   }
@@ -113,14 +133,6 @@ bool HWPulseMeter::init_pcnt_() {
     ESP_LOGE(TAG, "pcnt_unit_enable failed");
     return false;
   }
-  if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
-    ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
-    return false;
-  }
-  if (pcnt_unit_start(this->unit_) != ESP_OK) {
-    ESP_LOGE(TAG, "pcnt_unit_start failed");
-    return false;
-  }
   return true;
 }
 
@@ -140,7 +152,7 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t unit, const pcnt_w
   BaseType_t hpw = pdFALSE;
   (void) xQueueSendFromISR(self->evt_queue_, &t, &hpw);
 
-  // rearm – začneme další otáčku od nuly
+  // rearm: začneme další otáčku od nuly
   (void) pcnt_unit_clear_count(unit);
 
   return hpw == pdTRUE;
@@ -170,7 +182,7 @@ void HWPulseMeter::loop() {
 
     this->last_rev_time_us_ = now_us;
     this->last_event_time_us_ = now_us;
-    this->idle_zero_sent_ = false;
+    this->idle_zero_sent_{false};
 
     // Revoluce a total
     this->current_total_revs_ += 1;

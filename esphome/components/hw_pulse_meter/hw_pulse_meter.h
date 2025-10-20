@@ -69,7 +69,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   pcnt_unit_handle_t unit_{nullptr};
   pcnt_channel_handle_t channel_{nullptr};
 
-  QueueHandle_t evt_queue_{nullptr};  // fronta timestampů (µs) pro celé otáčky
+  QueueHandle_t evt_queue_{nullptr};  // timestampy (µs) celých otáček
 
   uint64_t last_rev_time_us_{0};
   uint64_t last_event_time_us_{0};
