@@ -31,6 +31,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   }
   void set_pulses_per_revolution(uint32_t ppr) { pulses_per_revolution_ = (ppr == 0) ? 1u : ppr; }
   void set_idle_timeout_us(uint32_t us) { idle_timeout_us_ = us; }
+  void set_sample_period_us(uint32_t us) { sample_period_us_ = (us == 0 ? 1000u : us); }  // min 1 ms interně
 
   void set_publish_total(bool v) { publish_total_ = v; }
   void set_publish_pps(bool v) { publish_pps_ = v; }
@@ -70,6 +71,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   uint32_t internal_filter_us_applied_{12};
   uint32_t pulses_per_revolution_{1};
   uint32_t idle_timeout_us_{0};
+  uint32_t sample_period_us_{50000};  // DEFAULT: 50 ms (konfigurovatelné v YAML)
 
   bool publish_total_{false}, publish_pps_{false}, publish_revolutions_{false};
   sensor::Sensor *total_sensor_{nullptr};
@@ -80,9 +82,8 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   pcnt_unit_handle_t unit_{nullptr};
   pcnt_channel_handle_t channel_{nullptr};
 
-  // Periodický interní timer (10 ms jen pro read&clear z PCNT)
+  // Periodický interní timer (sample_period_us_ jen pro read&clear z PCNT)
   esp_timer_handle_t timer_{nullptr};
-  static constexpr uint64_t TIMER_PERIOD_US = 10000ULL;
 
   // Sdílené akumulátory mezi timerem a loopem
   std::atomic<int64_t> pending_total_delta_{0};        // pulzy od posledního loopu (pro total/revs)

@@ -63,7 +63,7 @@ void HWPulseMeter::setup() {
   this->last_calculated_pps_.store(NAN, std::memory_order_relaxed);
   this->new_value_ready_.store(false, std::memory_order_relaxed);
 
-  if (!this->start_timer_(TIMER_PERIOD_US)) {
+  if (!this->start_timer_(this->sample_period_us_)) {
     this->mark_failed();
     return;
   }
@@ -198,7 +198,7 @@ bool HWPulseMeter::start_timer_(uint64_t period_us) {
     ESP_LOGE(TAG, "esp_timer_create failed");
     return false;
   }
-  if (esp_timer_start_periodic(this->timer_, period_us == 0 ? TIMER_PERIOD_US : period_us) != ESP_OK) {
+  if (esp_timer_start_periodic(this->timer_, period_us == 0 ? 50000ULL : period_us) != ESP_OK) {
     ESP_LOGE(TAG, "esp_timer_start_periodic failed");
     esp_timer_delete(this->timer_);
     this->timer_ = nullptr;
@@ -289,6 +289,7 @@ void HWPulseMeter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Internal filter (requested/applied): %u us / %u us",
                 (unsigned) this->internal_filter_us_requested_, (unsigned) this->internal_filter_us_applied_);
   ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) this->idle_timeout_us_);
+  ESP_LOGCONFIG(TAG, "  Sample period: %u us", (unsigned) this->sample_period_us_);
   ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) this->pulses_per_revolution_);
   ESP_LOGCONFIG(TAG, "  Publishes: main=RPM, pps=%s, revolutions=%s, total=%s", this->publish_pps_ ? "yes" : "no",
                 this->publish_revolutions_ ? "yes" : "no", this->publish_total_ ? "yes" : "no");
