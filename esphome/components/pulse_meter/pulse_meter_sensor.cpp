@@ -110,13 +110,26 @@ float PulseMeterSensor::get_setup_priority() const { return setup_priority::DATA
 void PulseMeterSensor::dump_config() {
   LOG_SENSOR("", "Pulse Meter", this);
   LOG_PIN("  Pin: ", this->pin_);
+
+  // Výpis režimu
+  const char *mode_str = (this->filter_mode_ == FILTER_EDGE) ? "EDGE" : "PULSE";
+  ESP_LOGCONFIG(TAG, "  Mode: %s", mode_str);
+
+  // Detekce HW/SW glitch filtru
+  const char *filter_type;
   if (this->filter_mode_ == FILTER_EDGE) {
-    ESP_LOGCONFIG(TAG, "  Filtering rising edges less than %" PRIu32 " µs apart", this->filter_us_);
+    filter_type = this->hw_filter_active_ ? "HW" : "SW";
   } else {
-    ESP_LOGCONFIG(TAG, "  Filtering pulses shorter than %" PRIu32 " µs", this->filter_us_);
+    // PULSE mód vždy používá softwarový filtr
+    filter_type = "SW";
   }
-  ESP_LOGCONFIG(TAG, "  Assuming 0 pulses/min after not receiving a pulse for %" PRIu32 "s",
-                this->timeout_us_ / 1000000U);
+
+  ESP_LOGCONFIG(TAG, "  Glitch filter: %s (%" PRIu32 " µs)", filter_type, this->filter_us_);
+  ESP_LOGCONFIG(TAG, "  Timeout: %" PRIu32 " s", this->timeout_us_ / 1000000U);
+
+  if (this->total_sensor_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Total pulses sensor linked");
+  }
 }
 
 void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
