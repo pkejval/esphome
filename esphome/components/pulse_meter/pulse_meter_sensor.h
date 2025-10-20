@@ -22,7 +22,6 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   void set_timeout_us(uint32_t timeout) { this->timeout_us_ = timeout; }
   void set_total_sensor(sensor::Sensor *sensor) { this->total_sensor_ = sensor; }
   void set_filter_mode(InternalFilterMode mode) { this->filter_mode_ = mode; }
-
   void set_total_pulses(uint32_t pulses);
 
   void setup() override;
@@ -31,8 +30,20 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   void dump_config() override;
 
  protected:
-  static void edge_intr(PulseMeterSensor *sensor);
-  static void pulse_intr(PulseMeterSensor *sensor);
+  static inline uint32_t us_since(uint32_t now, uint32_t then) { return static_cast<uint32_t>(now - then); }
+
+  static void IRAM_ATTR edge_intr(PulseMeterSensor *sensor);
+  static void IRAM_ATTR pulse_intr(PulseMeterSensor *sensor);
+
+  inline void IRAM_ATTR record_edge_(uint32_t now) {
+    if (us_since(now, this->edge_state_.last_sent_edge_us_) < this->filter_us_)
+      return;
+    this->edge_state_.last_sent_edge_us_ = now;
+    auto &set = *this->set_;
+    set.last_detected_edge_us_ = now;
+    set.last_rising_edge_us_ = now;
+    set.count_++;
+  }
 
   InternalGPIOPin *pin_{nullptr};
   uint32_t filter_us_ = 0;
@@ -40,16 +51,12 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   sensor::Sensor *total_sensor_{nullptr};
   InternalFilterMode filter_mode_{FILTER_EDGE};
 
-  // Variables used in the loop
   enum class MeterState { INITIAL, RUNNING, TIMED_OUT };
   MeterState meter_state_ = MeterState::INITIAL;
-  bool peeked_edge_ = false;
+
   uint32_t total_pulses_ = 0;
   uint32_t last_processed_edge_us_ = 0;
 
-  // This struct (and the two pointers) are used to pass data between the ISR and loop.
-  // These two pointers are exchanged each loop.
-  // Use these to send data from the ISR to the loop not the other way around (except for resetting the values).
   struct State {
     uint32_t last_detected_edge_us_ = 0;
     uint32_t last_rising_edge_us_ = 0;
@@ -59,19 +66,14 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   volatile State *set_ = state_;
   volatile State *get_ = state_ + 1;
 
-  // Only use the following variables in the ISR or while guarded by an InterruptLock
   ISRInternalGPIOPin isr_pin_;
-
-  /// The last pin value seen
   bool last_pin_val_ = false;
 
-  /// Filter state for edge mode
   struct EdgeState {
     uint32_t last_sent_edge_us_ = 0;
   };
   EdgeState edge_state_{};
 
-  /// Filter state for pulse mode
   struct PulseState {
     uint32_t last_intr_ = 0;
     bool latched_ = false;
