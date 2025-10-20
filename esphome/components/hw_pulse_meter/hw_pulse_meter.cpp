@@ -203,15 +203,11 @@ void HWPulseMeter::try_publish_throttled_(uint64_t now_us) {
   bool should_pub_zero = false;
 
   if (pulses > 0) {
-    const double dt_us = static_cast<double>(since_last_pub);
-    if (dt_us > 0.0) {
-      // PPM = pulses * 60e6 / dt_us
-      const double ppm = (static_cast<double>(pulses) * 60000000.0) / dt_us;
-      // RPM = PPM / PPR
-      const uint32_t ppr = this->pulses_per_revolution_;
-      const double rpm = (ppr > 0) ? (ppm / static_cast<double>(ppr)) : ppm;
-      if (std::isfinite(rpm))
-        rpm_to_pub = static_cast<float>(rpm);
+    const double dt_s = static_cast<double>(since_last_pub) / 1e6;  // převeď µs → s
+    if (dt_s > 0.0) {
+      const double revs = static_cast<double>(pulses) / static_cast<double>(ppr);
+      const double rpm = revs / dt_s * 60.0;  // otáčky za minutu
+      rpm_to_pub = static_cast<float>(rpm);
     }
   } else {
     if (this->idle_timeout_us_ > 0 && this->idle_zero_armed_ && this->last_pulse_time_us_ > 0) {
