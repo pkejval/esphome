@@ -86,14 +86,18 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  last_rev_time_us_ = 0;
-  last_event_time_us_ = 0;
+  // START ČASOVÁNÍ: hned po startu nastavíme referenční časy,
+  // aby se RPM/PPS spočítaly už z první otáčky (proti času startu)
+  const uint64_t t0 = static_cast<uint64_t>(esp_timer_get_time());
+  last_rev_time_us_ = t0;
+  last_event_time_us_ = t0;
   idle_zero_sent_ = false;
   current_total_pulses_ = 0;
   current_total_revs_ = 0;
 }
 
 bool HWPulseMeter::init_pcnt_() {
+  // Limity necháme široké; watchpoint řeší „celé otáčky“
   pcnt_unit_config_t unit_cfg{};
   unit_cfg.low_limit = std::numeric_limits<int16_t>::min();
   unit_cfg.high_limit = std::numeric_limits<int16_t>::max();
@@ -135,7 +139,8 @@ void HWPulseMeter::apply_glitch_filter_() {
   (void) pcnt_unit_set_glitch_filter(this->unit_, &gf);
 }
 
-bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t * /*edata*/,
+// WATCHPOINT callback: dosaženo PPR => celá otáčka
+bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t /*unit*/, const pcnt_watch_event_data_t * /*edata*/,
                                            void *user_data) {
   auto *self = static_cast<HWPulseMeter *>(user_data);
   if (self == nullptr)
@@ -145,8 +150,8 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t unit, const pcnt_w
   BaseType_t hpw = pdFALSE;
   (void) xQueueSendFromISR(self->evt_queue_, &t, &hpw);
 
-  // rearm: začneme další otáčku od nuly
-  (void) pcnt_unit_clear_count(unit);
+  // POZN.: nevolat zde pcnt_unit_clear_count() — není IRAM-safe a není to potřeba,
+  // PCNT watchpoint čítač rearmuje sám.
 
   return hpw == pdTRUE;
 }
@@ -160,7 +165,7 @@ void HWPulseMeter::loop() {
     const uint64_t now_us = t_us;
 
     // RPM/PPS z rozdílu času dvou po sobě jdoucích otáček
-    if (this->last_rev_time_us_ != 0 && now_us > this->last_rev_time_us_) {
+    if (now_us > this->last_rev_time_us_) {
       const double dt_s = static_cast<double>(now_us - this->last_rev_time_us_) / 1e6;
       if (dt_s > 0.0) {
         const double rpm = (1.0 / dt_s) * 60.0;
@@ -209,7 +214,7 @@ void HWPulseMeter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Count mode: %s", mode_str);
   ESP_LOGCONFIG(TAG, "  Internal filter (requested/applied): %u us / %u us",
                 (unsigned) this->internal_filter_us_requested_, (unsigned) this->internal_filter_us_applied_);
-  ESP_LOGCONFIG(TAG, "  PPR: %u", (unsigned) this->pulses_per_revolution_);
+  ESP_LOGCONFIG(TAG, "  Watchpoint: %u (== PPR)", (unsigned) this->pulses_per_revolution_);
   ESP_LOGCONFIG(TAG, "  Idle timeout: %u us", (unsigned) this->idle_timeout_us_);
   ESP_LOGCONFIG(TAG, "  Subsensors: total=%s, pps=%s, revolutions=%s", this->publish_total_ ? "yes" : "no",
                 this->publish_pps_ ? "yes" : "no", this->publish_revolutions_ ? "yes" : "no");
