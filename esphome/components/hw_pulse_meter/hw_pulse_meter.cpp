@@ -26,8 +26,7 @@ pcnt_channel_edge_action_t HWPulseMeter::map_edge_rising_(CountMode m) {
 pcnt_channel_edge_action_t HWPulseMeter::map_edge_falling_(CountMode m) {
   switch (m) {
     case RISING:
-      return PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_EDGE_ACTION_HOLD, PCNT_CHANNEL_EDGE_ACTION_HOLD,
-             PCNT_CHANNEL_EDGE_ACTION_HOLD;  // never used
+      return PCNT_CHANNEL_EDGE_ACTION_HOLD;
     case FALLING:
       return PCNT_CHANNEL_EDGE_ACTION_INCREASE;
     case BOTH:
@@ -65,7 +64,6 @@ void HWPulseMeter::setup() {
     this->mark_failed();
     return;
   }
-  (void) pcnt_unit_enable_event(this->unit_, PCNT_EVENT_REACH);
 
   pcnt_event_callbacks_t cbs{};
   cbs.on_reach = &HWPulseMeter::on_reach_isr_;
@@ -146,18 +144,6 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t unit, const pcnt_w
   (void) pcnt_unit_clear_count(unit);
 
   return hpw == pdTRUE;
-}
-
-bool HWPulseMeter::read_and_clear_pcnt_(int32_t &out) {
-  // V event módu PCNT nečteme periodicky, ale ponecháme utilitu pro případné rozšíření.
-  if (this->unit_ == nullptr)
-    return false;
-  int v = 0;
-  if (pcnt_unit_get_count(this->unit_, &v) != ESP_OK)
-    return false;
-  out = static_cast<int32_t>(v);
-  (void) pcnt_unit_clear_count(this->unit_);
-  return true;
 }
 
 void HWPulseMeter::loop() {
