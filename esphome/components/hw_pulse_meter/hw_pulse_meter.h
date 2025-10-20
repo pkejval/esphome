@@ -84,7 +84,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   // Polling režim
   bool use_polling_{false};
   uint32_t poll_interval_us_{0};
-  TaskHandle_t poll_task_{nullptr};
+  TaskHandle_t poll_task_handle_{nullptr};
   uint32_t carry_pulses_{0};
   uint64_t last_poll_time_us_{0};
 

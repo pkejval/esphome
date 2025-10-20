@@ -88,7 +88,7 @@ void HWPulseMeter::setup() {
   this->apply_glitch_filter_();
 
   if (!use_polling_) {
-    // ISR režim: fronta + watchpoint + callback
+    // ISR režim
     evt_queue_ = xQueueCreate(32, sizeof(uint64_t));
     if (evt_queue_ == nullptr) {
       ESP_LOGE(TAG, "Failed to create event queue");
@@ -136,10 +136,10 @@ void HWPulseMeter::setup() {
   carry_pulses_ = 0;
 
   if (use_polling_) {
-    // Polling task: vyšší priorita, krátký periodický běh
     const UBaseType_t prio = (tskIDLE_PRIORITY + 3);
-    const uint32_t stack = 4096;
-    if (xTaskCreate(&HWPulseMeter::poll_task_trampoline_, "pcnt_poll", stack, this, prio, &poll_task_) != pdPASS) {
+    const uint32_t stack = 4096;  // stack depth (words) v ESP-IDF FreeRTOS
+    if (xTaskCreate(HWPulseMeter::poll_task_trampoline_, "pcnt_poll", stack, this, prio, &poll_task_handle_) !=
+        pdPASS) {
       ESP_LOGE(TAG, "Failed to create polling task");
       this->mark_failed();
       return;
@@ -161,7 +161,6 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t /*unit*/, const pc
 
 void HWPulseMeter::loop() {
   if (use_polling_) {
-    // V polling režimu nic neděláme v loop(); vše běží v tasku.
     return;
   }
 
@@ -216,7 +215,6 @@ void HWPulseMeter::loop() {
 void HWPulseMeter::poll_task_trampoline_(void *param) { static_cast<HWPulseMeter *>(param)->poll_task_(); }
 
 void HWPulseMeter::poll_task_() {
-  // Přesná časová základna: esp_timer, plánování: vTaskDelayUntil.
   TickType_t last_wake = xTaskGetTickCount();
   const uint32_t tick_us = (1000000UL / configTICK_RATE_HZ);
   TickType_t period_ticks = (TickType_t) (poll_interval_us_ / tick_us);
@@ -235,7 +233,6 @@ void HWPulseMeter::poll_task_() {
     if (dt_s <= 0.0)
       dt_s = static_cast<double>(period_ticks) / configTICK_RATE_HZ;
 
-    // Jednosměrné čítání: count >= 0
     uint32_t pulses = (count >= 0) ? static_cast<uint32_t>(count) : 0u;
     uint64_t total_pulses_interval = static_cast<uint64_t>(carry_pulses_) + static_cast<uint64_t>(pulses);
 
@@ -262,7 +259,6 @@ void HWPulseMeter::poll_task_() {
       idle_zero_sent_ = false;
       last_rev_time_us_ = now_us;
     } else {
-      // Žádná celá otáčka v intervalu: publikuj PPS (volitelně) a idle
       if (this->publish_pps_ && this->pps_sensor_ != nullptr) {
         const double pps = static_cast<double>(pulses) / dt_s;
         this->pps_sensor_->publish_state(static_cast<float>(pps));
@@ -280,7 +276,7 @@ void HWPulseMeter::poll_task_() {
       }
     }
 
-    (void) pcnt_unit_clear_count(this->unit_);  // fast-rearm
+    (void) pcnt_unit_clear_count(this->unit_);
     this->last_poll_time_us_ = now_us;
   }
 }
@@ -303,9 +299,9 @@ void HWPulseMeter::dump_config() {
 }
 
 HWPulseMeter::~HWPulseMeter() {
-  if (this->poll_task_ != nullptr) {
-    vTaskDelete(this->poll_task_);
-    this->poll_task_ = nullptr;
+  if (this->poll_task_handle_ != nullptr) {
+    vTaskDelete(this->poll_task_handle_);
+    this->poll_task_handle_ = nullptr;
   }
   if (this->unit_ != nullptr)
     (void) pcnt_unit_stop(this->unit_);

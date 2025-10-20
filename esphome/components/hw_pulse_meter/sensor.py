@@ -58,10 +58,14 @@ def _validate_internal_filter(v):
 
 
 def _validate_poll_interval(v):
+    # povol i '0' bez jednotky → vyhodnotí se jako 0us (ISR režim)
+    if isinstance(v, (int, float)) and v == 0:
+        return cv.time_period_microseconds(0)
     t = cv.positive_time_period_microseconds(v)
-    if t.total_microseconds <= 0:
-        return cv.time_period_microseconds(0)  # 0 = disable polling (ISR mode)
-    # Minimálně 200 µs kvůli plánování; default můžeš dát 1000 µs v YAML.
+    if t.total_microseconds < 0:
+        return cv.time_period_microseconds(0)
+    if t.total_microseconds == 0:
+        return cv.time_period_microseconds(0)
     if t.total_microseconds < 200:
         raise cv.Invalid("poll_interval must be >= 200us")
     return t
@@ -81,7 +85,7 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_INTERNAL_FILTER, default="12us"): _validate_internal_filter,
         cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
-        cv.Optional(CONF_POLL_INTERVAL, default="0us"): _validate_poll_interval,
+        cv.Optional(CONF_POLL_INTERVAL, default=0): _validate_poll_interval,
         cv.Optional(CONF_TOTAL): sensor.sensor_schema(
             unit_of_measurement=UNIT_PULSES,
             accuracy_decimals=0,
@@ -118,8 +122,12 @@ async def to_code(config):
     cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
 
-    poll = config.get(CONF_POLL_INTERVAL)
-    poll_us = int(poll.total_microseconds) if poll is not None else 0
+    poll = config.get(CONF_POLL_INTERVAL, 0)
+    poll_us = (
+        int(cv.time_period_microseconds(poll).total_microseconds)
+        if isinstance(poll, dict)
+        else int(poll)
+    )
     cg.add(var.set_poll_interval_us(poll_us))
 
     publish_total = CONF_TOTAL in config
