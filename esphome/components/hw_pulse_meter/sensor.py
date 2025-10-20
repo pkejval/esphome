@@ -26,7 +26,6 @@ CONF_COUNT_MODE = "count_mode"
 CONF_INTERNAL_FILTER = "internal_filter"
 CONF_TIMEOUT = "timeout"
 CONF_PPR = "pulses_per_revolution"
-CONF_MIN_PUB_INT = "min_publish_interval"
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
 CONF_REVS = "revolutions"
@@ -70,9 +69,6 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_COUNT_MODE, default="RISING"): cv.enum(COUNT_MODE, upper=True),
         cv.Optional(CONF_INTERNAL_FILTER, default="12us"): _validate_internal_filter,
         cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,
-        cv.Optional(
-            CONF_MIN_PUB_INT, default="50ms"
-        ): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
         cv.Optional(CONF_TOTAL): sensor.sensor_schema(
             unit_of_measurement=UNIT_PULSES,
@@ -108,11 +104,6 @@ async def to_code(config):
     cg.add(var.set_internal_filter_us(requested_us, applied_us))
 
     cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))
-    cg.add(
-        var.set_min_publish_interval_us(
-            config[CONF_MIN_PUB_INT].total_milliseconds * 1000
-        )
-    )
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
 
     publish_total = CONF_TOTAL in config

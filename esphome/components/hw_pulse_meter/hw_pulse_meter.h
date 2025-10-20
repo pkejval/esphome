@@ -31,7 +31,6 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   }
   void set_pulses_per_revolution(uint32_t ppr) { pulses_per_revolution_ = (ppr == 0) ? 1u : ppr; }
   void set_idle_timeout_us(uint32_t us) { idle_timeout_us_ = us; }
-  void set_min_publish_interval_us(uint32_t us) { min_publish_interval_us_ = (us == 0 ? 1u : us); }
 
   void set_publish_total(bool v) { publish_total_ = v; }
   void set_publish_pps(bool v) { publish_pps_ = v; }
@@ -63,7 +62,6 @@ class HWPulseMeter : public sensor::Sensor, public Component {
 
   // Helpers
   bool read_and_clear_pcnt_(int32_t &out);
-  void try_publish_throttled_(uint64_t now_us);
 
   // Konfig
   InternalGPIOPin *pin_{nullptr};
@@ -72,7 +70,6 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   uint32_t internal_filter_us_applied_{12};
   uint32_t pulses_per_revolution_{1};
   uint32_t idle_timeout_us_{0};
-  uint32_t min_publish_interval_us_{50000};  // default 50 ms
 
   bool publish_total_{false}, publish_pps_{false}, publish_revolutions_{false};
   sensor::Sensor *total_sensor_{nullptr};
@@ -88,20 +85,24 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   static constexpr uint64_t TIMER_PERIOD_US = 10000ULL;
 
   // Sdílené akumulátory mezi timerem a loopem
-  std::atomic<int64_t> pending_total_delta_{0};       // pulzy od minulé publikace (pro total/revs)
-  std::atomic<int64_t> pending_pulses_since_pub_{0};  // pulzy od minulé publikace (pro RPM/pps)
+  std::atomic<int64_t> pending_total_delta_{0};        // pulzy od posledního loopu (pro total/revs)
+  std::atomic<uint32_t> pending_pulses_since_rev_{0};  // pulzy od poslední publikované otáčky
+
+  // Poslední spočítané hodnoty (z timeru)
+  std::atomic<float> last_calculated_rpm_{NAN};
+  std::atomic<float> last_calculated_pps_{NAN};
+  std::atomic<bool> new_value_ready_{false};
 
   // Časy
-  uint64_t last_pulse_time_us_{0};    // poslední detekovaný pulz (pro idle)
-  uint64_t last_publish_time_us_{0};  // čas poslední publikace (throttle)
-  bool ever_published_{false};
+  uint64_t last_pulse_time_us_{0};  // poslední reálný pulz (pro idle)
+  uint64_t last_rev_time_us_{0};    // čas poslední publikované otáčky
 
   // Stav publikovaných counters
   uint64_t current_total_{0};         // publikovaný total
   uint64_t last_revolutions_pub_{0};  // publikované whole revs = floor(current_total_/PPR)
 
   // Idle publikace nuly
-  bool idle_zero_armed_{false};
+  bool idle_zero_published_{false};
 };
 
 }  // namespace hw_pulse_meter
