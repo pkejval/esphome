@@ -51,6 +51,7 @@ class HWPulseMeter : public sensor::Sensor, public Component {
   static pcnt_channel_edge_action_t map_edge_rising_(CountMode m);
   static pcnt_channel_edge_action_t map_edge_falling_(CountMode m);
 
+  // ISR doručí timestamp do fronty
   static bool IRAM_ATTR on_reach_isr_(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_data);
 
   InternalGPIOPin *pin_{nullptr};

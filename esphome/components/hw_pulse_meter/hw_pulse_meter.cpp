@@ -73,13 +73,6 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // Povolit událost ON_REACH, jinak se callback nevyvolá.
-  if (pcnt_unit_enable_event(this->unit_, PCNT_EVT_ON_REACH) != ESP_OK) {
-    ESP_LOGE(TAG, "pcnt_unit_enable_event(ON_REACH) failed");
-    this->mark_failed();
-    return;
-  }
-
   if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
     this->mark_failed();
@@ -189,7 +182,7 @@ void HWPulseMeter::loop() {
     }
   }
 
-  // Re-arm watchpoint: po zpracování alespoň jedné události vynuluj čítač.
+  // Re-arm pro další watchpoint cyklus.
   if (any) {
     (void) pcnt_unit_clear_count(this->unit_);
   }
