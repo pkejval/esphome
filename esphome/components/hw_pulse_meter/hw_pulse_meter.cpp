@@ -65,7 +65,7 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // registrace callbacků
+  // registrace callbacků (po add_watch_point, před startem)
   pcnt_event_callbacks_t cbs{};
   cbs.on_reach = &HWPulseMeter::on_reach_isr_;
   if (pcnt_unit_register_event_callbacks(this->unit_, &cbs, this) != ESP_OK) {
@@ -74,14 +74,7 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // nutné zapnout přerušení jednotky, jinak se callbacky nevolají
-  if (pcnt_unit_enable_intr(this->unit_) != ESP_OK) {
-    ESP_LOGE(TAG, "pcnt_unit_enable_intr failed");
-    this->mark_failed();
-    return;
-  }
-
-  // nastartovat jednotku až po watchpointu/callbacku/interruptu
+  // clear a start jednotky
   if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
     this->mark_failed();
@@ -182,7 +175,7 @@ void HWPulseMeter::loop() {
 
     this->last_rev_time_us_ = now_us;
     this->last_event_time_us_ = now_us;
-    this->idle_zero_sent_{false};
+    this->idle_zero_sent_ = false;
 
     // Revoluce a total
     this->current_total_revs_ += 1;
