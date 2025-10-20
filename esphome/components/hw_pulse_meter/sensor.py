@@ -58,7 +58,7 @@ def _validate_internal_filter(v):
 
 CONFIG_SCHEMA = sensor.sensor_schema(
     HWPulseMeter,
-    unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE,  # hlavní senzor = RPM
+    unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE,
     icon=ICON_PULSE,
     accuracy_decimals=2,
     state_class=STATE_CLASS_MEASUREMENT,

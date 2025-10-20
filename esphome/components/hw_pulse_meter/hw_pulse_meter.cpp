@@ -43,21 +43,22 @@ void HWPulseMeter::setup() {
   }
   pin_->setup();
 
+  // 1) Vytvoř a nakonfiguruj jednotku a kanál (bez enable)
   if (!this->init_pcnt_()) {
     this->mark_failed();
     return;
   }
+
+  // 2) Nastav HW glitch filtr (před enable)
   this->apply_glitch_filter_();
 
-  // fronta pro časové značky celých otáček
+  // 3) Watchpoint == PPR (před enable)
   evt_queue_ = xQueueCreate(32, sizeof(uint64_t));
   if (evt_queue_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create event queue");
     this->mark_failed();
     return;
   }
-
-  // watchpoint = PPR
   const int watch_val = static_cast<int>(this->pulses_per_revolution_);
   if (pcnt_unit_add_watch_point(this->unit_, watch_val) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_add_watch_point(%d) failed", watch_val);
@@ -65,7 +66,7 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // registrace callbacků (po add_watch_point, před startem)
+  // 4) Registruj callbacky (před enable)
   pcnt_event_callbacks_t cbs{};
   cbs.on_reach = &HWPulseMeter::on_reach_isr_;
   if (pcnt_unit_register_event_callbacks(this->unit_, &cbs, this) != ESP_OK) {
@@ -74,9 +75,14 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // clear a start jednotky
+  // 5) Clear, enable a start
   if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
+    this->mark_failed();
+    return;
+  }
+  if (pcnt_unit_enable(this->unit_) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_enable failed");
     this->mark_failed();
     return;
   }
@@ -86,8 +92,7 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // START ČASOVÁNÍ: hned po startu nastavíme referenční časy,
-  // aby se RPM/PPS spočítaly už z první otáčky (proti času startu)
+  // 6) Inicializace časové základny pro první otáčku
   const uint64_t t0 = static_cast<uint64_t>(esp_timer_get_time());
   last_rev_time_us_ = t0;
   last_event_time_us_ = t0;
@@ -97,7 +102,6 @@ void HWPulseMeter::setup() {
 }
 
 bool HWPulseMeter::init_pcnt_() {
-  // Limity necháme široké; watchpoint řeší „celé otáčky“
   pcnt_unit_config_t unit_cfg{};
   unit_cfg.low_limit = std::numeric_limits<int16_t>::min();
   unit_cfg.high_limit = std::numeric_limits<int16_t>::max();
@@ -126,10 +130,7 @@ bool HWPulseMeter::init_pcnt_() {
     return false;
   }
 
-  if (pcnt_unit_enable(this->unit_) != ESP_OK) {
-    ESP_LOGE(TAG, "pcnt_unit_enable failed");
-    return false;
-  }
+  // DŮLEŽITÉ: zde NEdělat unit_enable(), přijde až po filtru+watchpointu+callbacku
   return true;
 }
 
@@ -150,21 +151,17 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t /*unit*/, const pc
   BaseType_t hpw = pdFALSE;
   (void) xQueueSendFromISR(self->evt_queue_, &t, &hpw);
 
-  // POZN.: nevolat zde pcnt_unit_clear_count() — není IRAM-safe a není to potřeba,
-  // PCNT watchpoint čítač rearmuje sám.
-
+  // Nevolat zde pcnt_unit_clear_count(): není IRAM-safe a watchpoint rearmuje HW sám.
   return hpw == pdTRUE;
 }
 
 void HWPulseMeter::loop() {
-  // Zpracuj všechny doručené celé otáčky
   uint64_t t_us = 0;
   bool any = false;
   while (xQueueReceive(this->evt_queue_, &t_us, 0) == pdTRUE) {
     any = true;
     const uint64_t now_us = t_us;
 
-    // RPM/PPS z rozdílu času dvou po sobě jdoucích otáček
     if (now_us > this->last_rev_time_us_) {
       const double dt_s = static_cast<double>(now_us - this->last_rev_time_us_) / 1e6;
       if (dt_s > 0.0) {
@@ -182,7 +179,6 @@ void HWPulseMeter::loop() {
     this->last_event_time_us_ = now_us;
     this->idle_zero_sent_ = false;
 
-    // Revoluce a total
     this->current_total_revs_ += 1;
     this->current_total_pulses_ += this->pulses_per_revolution_;
 
@@ -194,7 +190,6 @@ void HWPulseMeter::loop() {
     }
   }
 
-  // Idle: pokud dlouho nepřišla otáčka, publikuj 0 (jen jednou)
   if (!any && this->idle_timeout_us_ > 0 && this->last_event_time_us_ != 0 && !this->idle_zero_sent_) {
     const uint64_t now = static_cast<uint64_t>(esp_timer_get_time());
     if ((now - this->last_event_time_us_) >= this->idle_timeout_us_) {
