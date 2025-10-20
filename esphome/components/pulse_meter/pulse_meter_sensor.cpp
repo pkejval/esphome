@@ -28,27 +28,21 @@ void PulseMeterSensor::setup() {
   this->last_processed_edge_us_ = micros();
 
 #if defined(SOC_GPIO_SUPPORT_GLITCH_FILTER)
-  // HW glitch filter (pokud je k dispozici v SoC + IDF).
-  // Pozn.: API se může lišit dle IDF; držíme to maximálně tolerantní pro build.
+  // HW glitch filtr – pokud jej SoC/IDF podporuje a máme nenulový filtr
   if (this->filter_mode_ == FILTER_EDGE && this->filter_us_ > 0) {
-    int raw_pin = -1;
-    // InternalGPIOPin v ESPHome typicky umí poskytnout číslo pinu:
-    // pokud ve tvé verzi není get_pin(), nahraď dle své implementace
-    if (this->pin_->is_internal()) {
-      raw_pin = this->pin_->get_pin();
-    } else {
-      raw_pin = this->pin_->get_pin();
-    }
+    const int raw_pin = this->pin_->get_pin();  // zjednodušeno dle návrhu
 #if ESP_IDF_VERSION_MAJOR >= 5
     gpio_glitch_filter_handle_t h = nullptr;
     gpio_glitch_filter_config_t cfg = {};
     cfg.gpio_num = static_cast<gpio_num_t>(raw_pin);
     cfg.clk_src = GPIO_GLITCH_FILTER_CLK_SRC_DEFAULT;
     cfg.window_thres_ns = static_cast<uint32_t>(this->filter_us_) * 1000U;
-    cfg.window_width_ns = 0;  // 0 = default behavior (jen threshold)
+    cfg.window_width_ns = 0;
     if (gpio_new_glitch_filter(&cfg, &h) == ESP_OK) {
-      gpio_glitch_filter_enable(h);
-      this->glitch_filter_handle_ = h;
+      if (gpio_glitch_filter_enable(h) == ESP_OK) {
+        this->glitch_filter_handle_ = h;
+        this->hw_filter_active_ = true;  // HW filtr aktivní → SW filtr v ISR se vypne
+      }
     }
 #endif
   }
@@ -70,15 +64,9 @@ void PulseMeterSensor::loop() {
   {
     InterruptLock lock;
 
-    // Optimalizace 5: žádný fallback polling pinu v loopu
-    // Děláme jen bezpečný swap a přípravu write-bufferu.
-
-    // 1) swap nejdřív
+    // Optimalizovaný swap: nejdřív přepnout, pak vynulovat nový write buffer
     std::swap(this->set_, this->get_);
-
-    // 2) vynuluj nový write-buffer (set_)
     this->set_->count_ = 0;
-    // pozn.: časová pole necháváme nedotčena; ISR přepíše při další hraně
   }
 
   const uint32_t now = micros();

@@ -42,9 +42,12 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   static void IRAM_ATTR edge_intr(PulseMeterSensor *sensor);
   static void IRAM_ATTR pulse_intr(PulseMeterSensor *sensor);
 
+  // Záznam hrany s podmíněným SW filtrem (jen když HW filtr není aktivní)
   inline void IRAM_ATTR record_edge_(uint32_t now) {
-    if (us_since(now, this->edge_state_.last_sent_edge_us_) < this->filter_us_)
+    if (UNLIKELY(!this->hw_filter_active_ &&
+                 (us_since(now, this->edge_state_.last_sent_edge_us_) < this->filter_us_))) {
       return;
+    }
     this->edge_state_.last_sent_edge_us_ = now;
     auto &set = *this->set_;
     set.last_detected_edge_us_ = now;
@@ -88,9 +91,9 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   PulseState pulse_state_{};
 
 #if defined(SOC_GPIO_SUPPORT_GLITCH_FILTER)
-  // držíme handle filtru, aby šel případně vypnout/deinit (nepovinné)
-  void *glitch_filter_handle_ = nullptr;  // typ zůstává ne-striktní, ať to neblokuje build na starších IDF
+  void *glitch_filter_handle_ = nullptr;
 #endif
+  bool hw_filter_active_ = false;
 };
 
 }  // namespace pulse_meter
