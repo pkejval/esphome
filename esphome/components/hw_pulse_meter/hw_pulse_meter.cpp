@@ -205,7 +205,7 @@ void HWPulseMeter::try_publish_throttled_(uint64_t now_us) {
   if (pulses > 0) {
     const double dt_s = static_cast<double>(since_last_pub) / 1e6;  // převeď µs → s
     if (dt_s > 0.0) {
-      const double revs = static_cast<double>(pulses) / static_cast<double>(ppr);
+      const double revs = static_cast<double>(pulses) / static_cast<double>(this->pulses_per_revolution_);
       const double rpm = revs / dt_s * 60.0;  // otáčky za minutu
       rpm_to_pub = static_cast<float>(rpm);
     }
