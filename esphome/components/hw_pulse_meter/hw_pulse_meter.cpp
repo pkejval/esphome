@@ -23,6 +23,7 @@ pcnt_channel_edge_action_t HWPulseMeter::map_edge_rising_(CountMode m) {
       return PCNT_CHANNEL_EDGE_ACTION_HOLD;
   }
 }
+
 pcnt_channel_edge_action_t HWPulseMeter::map_edge_falling_(CountMode m) {
   switch (m) {
     case RISING:
@@ -43,22 +44,20 @@ void HWPulseMeter::setup() {
   }
   pin_->setup();
 
-  // 1) Vytvoř a nakonfiguruj jednotku a kanál (bez enable)
   if (!this->init_pcnt_()) {
     this->mark_failed();
     return;
   }
 
-  // 2) Nastav HW glitch filtr (před enable)
   this->apply_glitch_filter_();
 
-  // 3) Watchpoint == PPR (před enable)
   evt_queue_ = xQueueCreate(32, sizeof(uint64_t));
   if (evt_queue_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create event queue");
     this->mark_failed();
     return;
   }
+
   const int watch_val = static_cast<int>(this->pulses_per_revolution_);
   if (pcnt_unit_add_watch_point(this->unit_, watch_val) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_add_watch_point(%d) failed", watch_val);
@@ -66,7 +65,6 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // 4) Registruj callbacky (před enable)
   pcnt_event_callbacks_t cbs{};
   cbs.on_reach = &HWPulseMeter::on_reach_isr_;
   if (pcnt_unit_register_event_callbacks(this->unit_, &cbs, this) != ESP_OK) {
@@ -75,7 +73,13 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // 5) Clear, enable a start
+  // Povolit událost ON_REACH, jinak se callback nevyvolá.
+  if (pcnt_unit_enable_event(this->unit_, PCNT_EVT_ON_REACH) != ESP_OK) {
+    ESP_LOGE(TAG, "pcnt_unit_enable_event(ON_REACH) failed");
+    this->mark_failed();
+    return;
+  }
+
   if (pcnt_unit_clear_count(this->unit_) != ESP_OK) {
     ESP_LOGE(TAG, "pcnt_unit_clear_count failed");
     this->mark_failed();
@@ -92,7 +96,6 @@ void HWPulseMeter::setup() {
     return;
   }
 
-  // 6) Inicializace časové základny pro první otáčku
   const uint64_t t0 = static_cast<uint64_t>(esp_timer_get_time());
   last_rev_time_us_ = t0;
   last_event_time_us_ = t0;
@@ -129,8 +132,6 @@ bool HWPulseMeter::init_pcnt_() {
     ESP_LOGE(TAG, "pcnt_channel_set_level_action failed");
     return false;
   }
-
-  // DŮLEŽITÉ: zde NEdělat unit_enable(), přijde až po filtru+watchpointu+callbacku
   return true;
 }
 
@@ -140,7 +141,6 @@ void HWPulseMeter::apply_glitch_filter_() {
   (void) pcnt_unit_set_glitch_filter(this->unit_, &gf);
 }
 
-// WATCHPOINT callback: dosaženo PPR => celá otáčka
 bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t /*unit*/, const pcnt_watch_event_data_t * /*edata*/,
                                            void *user_data) {
   auto *self = static_cast<HWPulseMeter *>(user_data);
@@ -150,14 +150,13 @@ bool IRAM_ATTR HWPulseMeter::on_reach_isr_(pcnt_unit_handle_t /*unit*/, const pc
   const uint64_t t = static_cast<uint64_t>(esp_timer_get_time());
   BaseType_t hpw = pdFALSE;
   (void) xQueueSendFromISR(self->evt_queue_, &t, &hpw);
-
-  // Nevolat zde pcnt_unit_clear_count(): není IRAM-safe a watchpoint rearmuje HW sám.
   return hpw == pdTRUE;
 }
 
 void HWPulseMeter::loop() {
   uint64_t t_us = 0;
   bool any = false;
+
   while (xQueueReceive(this->evt_queue_, &t_us, 0) == pdTRUE) {
     any = true;
     const uint64_t now_us = t_us;
@@ -188,6 +187,11 @@ void HWPulseMeter::loop() {
     if (this->publish_total_ && this->total_sensor_ != nullptr) {
       this->total_sensor_->publish_state(static_cast<float>(this->current_total_pulses_));
     }
+  }
+
+  // Re-arm watchpoint: po zpracování alespoň jedné události vynuluj čítač.
+  if (any) {
+    (void) pcnt_unit_clear_count(this->unit_);
   }
 
   if (!any && this->idle_timeout_us_ > 0 && this->last_event_time_us_ != 0 && !this->idle_zero_sent_) {
