@@ -2,7 +2,6 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import (
-    CONF_ID,
     CONF_PIN,
     ICON_PULSE,
     UNIT_PULSES,
@@ -27,14 +26,13 @@ CONF_COUNT_MODE = "count_mode"
 CONF_INTERNAL_FILTER = "internal_filter"
 CONF_TIMEOUT = "timeout"
 CONF_PPR = "pulses_per_revolution"
+CONF_MIN_PUB_INT = "min_publish_interval"
 CONF_TOTAL = "total"
 CONF_PPS = "pps"
 CONF_REVS = "revolutions"
 
-# Variant-aware clamp (aligned with pulse_counter)
 LEGACY_ESP32_PCNT_FILTER_LIMIT_US = 12.0  # ESP32, ESP32-S2
 MODERN_ESP32_PCNT_FILTER_LIMIT_US = 819.0  # ESP32-S3, C3, C6, H2
-_CONF_INTERNAL_FILTER_APPLIED_US = "_internal_filter_applied_us"
 
 
 def _get_esp32_variant():
@@ -54,7 +52,6 @@ def _validate_internal_filter(v):
             if is_legacy
             else MODERN_ESP32_PCNT_FILTER_LIMIT_US
         )
-        # Clamp and stash applied value
         applied = min(float(t.total_microseconds), limit)
         t._applied_microseconds = int(applied)
     return t
@@ -62,7 +59,7 @@ def _validate_internal_filter(v):
 
 CONFIG_SCHEMA = sensor.sensor_schema(
     HWPulseMeter,
-    unit_of_measurement=UNIT_PULSES_PER_MINUTE,  # hlavní senzor publikuje PPM
+    unit_of_measurement=UNIT_PULSES_PER_MINUTE,  # hlavní senzor = PPM
     icon=ICON_PULSE,
     accuracy_decimals=2,
     state_class=STATE_CLASS_MEASUREMENT,
@@ -73,6 +70,9 @@ CONFIG_SCHEMA = sensor.sensor_schema(
         cv.Optional(CONF_COUNT_MODE, default="RISING"): cv.enum(COUNT_MODE, upper=True),
         cv.Optional(CONF_INTERNAL_FILTER, default="12us"): _validate_internal_filter,
         cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_microseconds,
+        cv.Optional(
+            CONF_MIN_PUB_INT, default="50ms"
+        ): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_PPR, default=1): cv.positive_int,
         cv.Optional(CONF_TOTAL): sensor.sensor_schema(
             unit_of_measurement=UNIT_PULSES,
@@ -102,13 +102,17 @@ async def to_code(config):
     cg.add(var.set_pin(pin))
     cg.add(var.set_count_mode(config[CONF_COUNT_MODE]))
 
-    # Internal filter: requested vs applied (clamped by variant)
     filt = config[CONF_INTERNAL_FILTER]
     requested_us = int(filt.total_microseconds)
     applied_us = getattr(filt, "_applied_microseconds", requested_us)
     cg.add(var.set_internal_filter_us(requested_us, applied_us))
 
     cg.add(var.set_idle_timeout_us(config[CONF_TIMEOUT].total_microseconds))
+    cg.add(
+        var.set_min_publish_interval_us(
+            config[CONF_MIN_PUB_INT].total_milliseconds * 1000
+        )
+    )
     cg.add(var.set_pulses_per_revolution(config[CONF_PPR]))
 
     publish_total = CONF_TOTAL in config
