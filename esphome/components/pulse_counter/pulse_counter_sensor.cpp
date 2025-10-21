@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <cmath>
+#include <algorithm>
 
 #if !defined(USE_ESP32)
 #include <Arduino.h>
@@ -25,41 +26,49 @@ std::unique_ptr<PulseCounterStorageBase> get_storage(bool hw_pcnt) {
 std::unique_ptr<PulseCounterStorageBase> get_storage(bool) { return std::make_unique<BasicPulseCounterStorage>(); }
 #endif
 
-// -------------------- Software counter --------------------
-
-void IRAM_ATTR BasicPulseCounterStorage::gpio_intr(BasicPulseCounterStorage *arg) {
-  const uint32_t t = micros();
-  const bool discard = t - arg->last_pulse < arg->filter_us;
-  arg->last_pulse = t;
-  if (discard)
-    return;
-
-  const bool level = arg->isr_pin.digital_read();
-  const auto mode = level ? arg->rising_edge_mode : arg->falling_edge_mode;
-
-  switch (mode) {
-    case PULSE_COUNTER_DISABLE:
-      break;
-    case PULSE_COUNTER_INCREMENT:
-      arg->counter = arg->counter + 1;
-      break;
-    case PULSE_COUNTER_DECREMENT:
-      arg->counter = arg->counter - 1;
-      break;
-  }
-}
+// -------------------- Basic (bez HW PCNT; ponecháno pro kompatibilitu) --------------------
 
 bool BasicPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->pin = pin;
   this->pin->setup();
   this->isr_pin = this->pin->to_isr();
-  this->pin->attach_interrupt(BasicPulseCounterStorage::gpio_intr, this, gpio::INTERRUPT_ANY_EDGE);
   this->last_value = 0;
   this->counter = 0;
+  this->initialized_{false};
+  this->last_edge_us_ = 0;
+  this->last_level_ = false;
   return true;
 }
 
 pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
+  // Minimalistická soft vzorkovací varianta: v update() se volá periodicky,
+  // hrany detekujeme porovnáním úrovně a měkkým dead-timem.
+  const uint32_t now = micros();
+  const bool level = this->isr_pin.digital_read();
+
+  if (!this->initialized_) {
+    this->initialized_ = true;
+    this->last_level_ = level;
+    this->last_edge_us_ = now;
+  } else if (level != this->last_level_) {
+    const uint32_t dt = now - this->last_edge_us_;
+    if (dt >= this->filter_us) {
+      const auto mode = level ? this->rising_edge_mode : this->falling_edge_mode;
+      switch (mode) {
+        case PULSE_COUNTER_DISABLE:
+          break;
+        case PULSE_COUNTER_INCREMENT:
+          this->counter = this->counter + 1;
+          break;
+        case PULSE_COUNTER_DECREMENT:
+          this->counter = this->counter - 1;
+          break;
+      }
+      this->last_edge_us_ = now;
+    }
+    this->last_level_ = level;
+  }
+
   pulse_counter_t current;
   pulse_counter_t delta;
   {
@@ -72,8 +81,7 @@ pulse_counter_t BasicPulseCounterStorage::read_raw_value() {
 }
 
 BasicPulseCounterStorage::~BasicPulseCounterStorage() {
-  if (this->pin != nullptr)
-    this->pin->detach_interrupt();
+  // nic
 }
 
 // -------------------- Hardware PCNT (read & clear) --------------------
@@ -126,8 +134,16 @@ bool HwPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   }
 
   if (this->filter_us != 0) {
+    // Bezpečný clamp na rozumný rozsah ESP-IDF (typicky do jednotek ms).
+    // Zároveň převod us -> ns.
+    const uint64_t req_ns = static_cast<uint64_t>(this->filter_us) * 1000ULL;
+
+    // Konzervativní horní limit (např. 5 ms), aby IDF nevracel chybu.
+    constexpr uint64_t MAX_NS = 5ULL * 1000ULL * 1000ULL;
+
     pcnt_glitch_filter_config_t gf = {};
-    gf.max_glitch_ns = static_cast<uint64_t>(this->filter_us) * 1000ULL;
+    gf.max_glitch_ns = std::min<uint64_t>(req_ns, MAX_NS);
+
     err = pcnt_unit_set_glitch_filter(this->unit, &gf);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Setting glitch filter failed: %s", esp_err_to_name(err));
@@ -163,6 +179,8 @@ pulse_counter_t HwPulseCounterStorage::read_raw_value() {
     return 0;
   }
 
+  // Pozn.: nepausujeme unit, aby nevznikala slepá okna; pulzy během clear
+  // prostě spadnou do dalšího intervalu (správné časové rozdělení).
   err = pcnt_unit_clear_count(this->unit);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Clearing PCNT count failed: %s", esp_err_to_name(err));
@@ -185,7 +203,7 @@ HwPulseCounterStorage::~HwPulseCounterStorage() {
 }
 #endif
 
-// -------------------- Sensor wrapper --------------------
+// -------------------- Sensor wrapper (adaptivní akumulace pro přesnost) --------------------
 
 PulseCounterSensor::~PulseCounterSensor() {
 #if defined(USE_ESP32)
@@ -206,6 +224,10 @@ void PulseCounterSensor::timer_callback(void *arg) {
 
   if (self->last_tick_us_ == 0) {
     self->last_tick_us_ = t;
+    // Inicializace akumulace
+    self->accum_start_us_ = t;
+    self->accum_dt_us_ = 0;
+    self->accum_pulses_ = 0;
     if (raw != 0)
       self->pending_total_delta_.fetch_add(raw, std::memory_order_relaxed);
     return;
@@ -217,14 +239,39 @@ void PulseCounterSensor::timer_callback(void *arg) {
   if (raw != 0) {
     self->pending_total_delta_.fetch_add(static_cast<int64_t>(raw), std::memory_order_relaxed);
   }
-
   if (dt_us == 0)
     return;
 
-  const double ppm = (static_cast<double>(raw) * 60000000.0) / static_cast<double>(dt_us);
-  if (std::isfinite(ppm)) {
-    self->last_calculated_ppm_.store(static_cast<float>(ppm), std::memory_order_relaxed);
-    self->new_value_ready_.store(true, std::memory_order_release);
+  // Akumulace pro přesnější výpočet
+  self->accum_dt_us_ += dt_us;
+  if (raw != 0)
+    self->accum_pulses_ += static_cast<uint32_t>((raw > 0) ? raw : 0);
+
+  // Urči max. akumulační čas (výchozí: 2 × update_interval), pokud nebyl ručně přepsán
+  uint64_t max_accum_us = self->max_accumulation_us_;
+  if (!self->custom_tuning_) {
+    const uint64_t ui_us = static_cast<uint64_t>(self->get_update_interval()) * 1000ULL;
+    max_accum_us = ui_us * 2ULL;
+  }
+
+  const bool enough_pulses = (self->accum_pulses_ >= self->min_pulses_for_calc_);
+  const bool time_up = (self->accum_dt_us_ >= max_accum_us);
+
+  if (enough_pulses || time_up) {
+    double ppm = NAN;
+    if (self->accum_dt_us_ > 0) {
+      ppm = (static_cast<double>(self->accum_pulses_) * 60000000.0) / static_cast<double>(self->accum_dt_us_);
+    }
+
+    if (std::isfinite(ppm) && ppm >= 0.0 && ppm < 1e9) {
+      self->last_calculated_ppm_.store(static_cast<float>(ppm), std::memory_order_relaxed);
+      self->new_value_ready_.store(true, std::memory_order_release);
+    }
+
+    // Reset akumulace pro další interval
+    self->accum_start_us_ = t;
+    self->accum_dt_us_ = 0;
+    self->accum_pulses_ = 0;
   }
 }
 #endif
@@ -261,11 +308,19 @@ void PulseCounterSensor::setup() {
   }
 #endif
 
-  // Publikuj počáteční total (např. 0 nebo nastavený přes set_total_pulses)
   if (this->total_sensor_ != nullptr) {
     this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
     this->total_ever_published_ = true;
   }
+
+  // Inicializace akumulačních parametrů (pokud neuživatel nepřepsal)
+  if (!this->custom_tuning_) {
+    const uint64_t ui_us = static_cast<uint64_t>(this->get_update_interval()) * 1000ULL;
+    this->max_accumulation_us_ = ui_us * 2ULL;
+  }
+  this->accum_start_us_ = 0;
+  this->accum_dt_us_ = 0;
+  this->accum_pulses_ = 0;
 }
 
 void PulseCounterSensor::set_update_interval(uint32_t update_interval) {
@@ -284,6 +339,12 @@ void PulseCounterSensor::set_update_interval(uint32_t update_interval) {
     this->last_tick_us_ = 0;
   }
 #endif
+
+  // Při změně intervalu aktualizuj implicitní max_accum, když není custom
+  if (!this->custom_tuning_) {
+    const uint64_t ui_us = static_cast<uint64_t>(this->get_update_interval()) * 1000ULL;
+    this->max_accumulation_us_ = ui_us * 2ULL;
+  }
 }
 
 void PulseCounterSensor::set_total_pulses(uint32_t pulses) {
@@ -300,9 +361,12 @@ void PulseCounterSensor::dump_config() {
   ESP_LOGCONFIG(TAG,
                 "  Rising Edge: %s\n"
                 "  Falling Edge: %s\n"
-                "  Filtering pulses shorter than %" PRIu32 " us",
+                "  Filtering pulses shorter than %" PRIu32 " us\n"
+                "  Min pulses per calc: %" PRIu32 "\n"
+                "  Max accumulation (ms): %" PRIu64,
                 EDGE_MODE_TO_STRING[this->storage_->rising_edge_mode],
-                EDGE_MODE_TO_STRING[this->storage_->falling_edge_mode], this->storage_->filter_us);
+                EDGE_MODE_TO_STRING[this->storage_->falling_edge_mode], this->storage_->filter_us,
+                this->min_pulses_for_calc_, this->max_accumulation_us_ / 1000ULL);
   LOG_UPDATE_INTERVAL(this);
 }
 
@@ -319,8 +383,9 @@ void PulseCounterSensor::update() {
   if (this->total_sensor_ != nullptr) {
     const int64_t delta = this->pending_total_delta_.exchange(0, std::memory_order_acq_rel);
     if (delta != 0 || !this->total_ever_published_) {
-      if (delta > 0) {
-        this->current_total_ += static_cast<uint64_t>(delta);
+      if (delta != 0) {
+        const int64_t new_total = static_cast<int64_t>(this->current_total_) + std::max<int64_t>(0, delta);
+        this->current_total_ = static_cast<uint64_t>(std::max<int64_t>(0, new_total));
       }
       this->total_sensor_->publish_state(static_cast<float>(this->current_total_));
       this->total_ever_published_ = true;

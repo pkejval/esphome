@@ -38,16 +38,15 @@ struct PulseCounterStorageBase {
 };
 
 struct BasicPulseCounterStorage : public PulseCounterStorageBase {
-  static void gpio_intr(BasicPulseCounterStorage *arg);
-
   bool pulse_counter_setup(InternalGPIOPin *pin) override;
   pulse_counter_t read_raw_value() override;
   ~BasicPulseCounterStorage() override;
 
   volatile pulse_counter_t counter{0};
-  volatile uint32_t last_pulse{0};
-
   ISRInternalGPIOPin isr_pin;
+  bool last_level_{false};
+  uint32_t last_edge_us_{0};
+  bool initialized_{false};
 };
 
 #ifdef HAS_PCNT
@@ -74,6 +73,16 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   void set_filter_us(uint32_t filter) { storage_->filter_us = filter; }
   void set_total_sensor(sensor::Sensor *total_sensor) { total_sensor_ = total_sensor; }
 
+  // Nastavení přesnosti/odezvy pro HW PCNT odhad
+  void set_min_pulses_per_calc(uint32_t n) {
+    min_pulses_for_calc_ = (n == 0 ? 1u : n);
+    custom_tuning_ = true;
+  }
+  void set_max_accumulation_ms(uint32_t ms) {
+    max_accumulation_us_ = static_cast<uint64_t>(ms) * 1000ULL;
+    custom_tuning_ = true;
+  }
+
   void set_total_pulses(uint32_t pulses);
 
   void setup() override;
@@ -89,6 +98,14 @@ class PulseCounterSensor : public sensor::Sensor, public PollingComponent {
   uint64_t current_total_{0};
   sensor::Sensor *total_sensor_{nullptr};
   bool total_ever_published_{false};
+
+  // Adaptivní akumulace pro přesnější PPM (hlavně HW PCNT)
+  uint64_t accum_start_us_{0};
+  uint64_t accum_dt_us_{0};
+  uint32_t accum_pulses_{0};
+  uint32_t min_pulses_for_calc_{3};  // výchozí
+  uint64_t max_accumulation_us_{0};  // výchozí: 2 × update_interval
+  bool custom_tuning_{false};
 
 #if defined(USE_ESP32)
   esp_timer_handle_t timer_handle_{nullptr};
