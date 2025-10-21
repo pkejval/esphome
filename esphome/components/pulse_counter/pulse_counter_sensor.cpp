@@ -34,7 +34,7 @@ bool BasicPulseCounterStorage::pulse_counter_setup(InternalGPIOPin *pin) {
   this->isr_pin = this->pin->to_isr();
   this->last_value = 0;
   this->counter = 0;
-  this->initialized_{false};
+  this->initialized_ = false;
   this->last_edge_us_ = 0;
   this->last_level_ = false;
   return true;
