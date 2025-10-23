@@ -48,7 +48,7 @@ void PulseMeterSensor::setup() {
 #endif
 #endif
 
-// RMT backend pro PULSE (pokud k dispozici)
+// RMT backend (PULSE)
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   if (this->filter_mode_ == FILTER_PULSE) {
     rmt_rx_channel_config_t ch_cfg{};
@@ -56,7 +56,6 @@ void PulseMeterSensor::setup() {
     ch_cfg.clk_src = RMT_CLK_SRC_DEFAULT;
     ch_cfg.resolution_hz = this->rmt_resolution_hz_;
     ch_cfg.mem_block_symbols = 512;
-    ch_cfg.flags = 0;
     if (rmt_new_rx_channel(&ch_cfg, &this->rmt_rx_channel_) == ESP_OK && this->rmt_rx_channel_) {
       rmt_rx_event_callbacks_t cbs{};
       cbs.on_recv_done = &PulseMeterSensor::rmt_rx_done_cb_;
@@ -75,31 +74,29 @@ void PulseMeterSensor::setup() {
   }
 #endif
 
-// MCPWM Capture backend (pokud RMT není, a máme MCPWM capture driver)
+// MCPWM Capture backend (fallback za RMT)
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
   if (!this->use_rmt_ && this->filter_mode_ == FILTER_PULSE) {
-    mcpwm_cap_timer_config_t tcfg{};
-    tcfg.group_id = 0;  // skupina 0 je ok pro většinu ESP32
-    tcfg.clk_src = MCPWM_CAP_CLK_SRC_DEFAULT;
+    mcpwm_capture_timer_config_t tcfg{};
+    tcfg.group_id = 0;
+    tcfg.clk_src = MCPWM_CAPTURE_CLK_SRC_DEFAULT;
     tcfg.resolution_hz = this->cap_resolution_hz_;
-    if (mcpwm_new_cap_timer(&tcfg, &this->cap_timer_) == ESP_OK && this->cap_timer_) {
+    if (mcpwm_new_capture_timer(&tcfg, &this->cap_timer_) == ESP_OK && this->cap_timer_) {
       mcpwm_capture_channel_config_t ccfg{};
       ccfg.gpio_num = (gpio_num_t) this->pin_->get_pin();
-      ccfg.prescale = 1;       // 1 tick = 1 us
-      ccfg.flags.pull_up = 1;  // stabilnější klidová úroveň
+      ccfg.prescale = 1;
+      ccfg.flags.pull_up = 1;
       ccfg.flags.invert_cap_signal = 0;
       if (mcpwm_new_capture_channel(this->cap_timer_, &ccfg, &this->cap_chan_) == ESP_OK && this->cap_chan_) {
         mcpwm_capture_event_callbacks_t cbs{};
         cbs.on_cap = &PulseMeterSensor::mcpwm_cap_cb_;
         if (mcpwm_capture_channel_register_event_callbacks(this->cap_chan_, &cbs, this) == ESP_OK &&
             mcpwm_capture_channel_enable(this->cap_chan_) == ESP_OK &&
-            mcpwm_cap_timer_enable(this->cap_timer_) == ESP_OK) {
-          mcpwm_cap_timer_start(this->cap_timer_);
-          // Zachytávej obě hrany – používáme dvouprahovou logiku stejně jako v GPIO ISR
-          mcpwm_capture_on_edge_t edges = MCPWM_CAP_EDGE_POS | MCPWM_CAP_EDGE_NEG;
-          mcpwm_capture_channel_start(this->cap_chan_, edges, 0);
+            mcpwm_capture_timer_enable(this->cap_timer_) == ESP_OK) {
+          mcpwm_capture_timer_start(this->cap_timer_);
+          mcpwm_capture_edge_t edges = (mcpwm_capture_edge_t) (MCPWM_CAPTURE_EDGE_POS | MCPWM_CAPTURE_EDGE_NEG);
+          mcpwm_capture_channel_start(this->cap_chan_, edges);
           this->use_mcpwm_ = true;
-          // Inicializace stavů
           this->cap_last_ts_us_ = 0;
           this->cap_last_level_high_ = this->isr_pin_.digital_read();
         }
@@ -108,7 +105,7 @@ void PulseMeterSensor::setup() {
   }
 #endif
 
-  // Fallback na původní GPIO ISR (pokud neběží RMT/MCPWM nebo je EDGE mód)
+  // Fallback na GPIO ISR
   if (
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
       !this->use_rmt_ &&
@@ -146,10 +143,10 @@ void PulseMeterSensor::loop() {
         const bool lvl0 = w.level0;
         const uint32_t dur0_us = w.duration0;
         if (lvl0 != last_pin) {
-          if (last_pin == 0) {  // LOW -> HIGH
+          if (last_pin == 0) {
             if (dur0_us >= this->min_low_us_)
               latched = false;
-          } else {  // HIGH -> LOW
+          } else {
             if (dur0_us >= this->min_high_us_) {
               latched = true;
               last_detected_edge_us = now;
@@ -162,10 +159,10 @@ void PulseMeterSensor::loop() {
         const bool lvl1 = w.level1;
         const uint32_t dur1_us = w.duration1;
         if (lvl1 != last_pin) {
-          if (last_pin == 0) {  // LOW -> HIGH
+          if (last_pin == 0) {
             if (dur1_us >= this->min_low_us_)
               latched = false;
-          } else {  // HIGH -> LOW
+          } else {
             if (dur1_us >= this->min_high_us_) {
               latched = true;
               last_detected_edge_us = now;
@@ -320,11 +317,11 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   const bool long_enough = (now - st.last_intr_) >= sensor->filter_us_;
 
   if (long_enough && st.latched_ && !st.last_pin_val_) {
-    if ((now - st.last_intr_) >= sensor->min_low_us_) {
+    if ((now - st.last_intr_) >= self->min_low_us_) {
       st.latched_ = false;
     }
   } else if (long_enough && !st.latched_ && st.last_pin_val_) {
-    if ((now - st.last_intr_) >= sensor->min_high_us_) {
+    if ((now - st.last_intr_) >= self->min_high_us_) {
       st.latched_ = true;
       set.last_detected_edge_us_ = st.last_intr_;
       set.count_ = set.count_ + 1;
@@ -354,21 +351,18 @@ bool IRAM_ATTR PulseMeterSensor::mcpwm_cap_cb_(mcpwm_cap_channel_handle_t, const
                                                void *user_ctx) {
   auto *self = static_cast<PulseMeterSensor *>(user_ctx);
 
-  // Převod timestampu na µs podle zvolené frekvence
-  const uint32_t ts_us = (uint32_t) (edata->cap_value);  // při 1 MHz = 1 µs
+  const uint32_t ts_us = (uint32_t) (edata->cap_value);
 
-  // Délka předchozí fáze
-  uint32_t dur_us = ts_us - self->cap_last_ts_us_;
-  const bool rising = (edata->cap_edge & MCPWM_CAP_EDGE_POS) != 0;
-  const bool falling = (edata->cap_edge & MCPWM_CAP_EDGE_NEG) != 0;
-
-  // Pozn.: MCPWM dává event pro aktuální hranu, délka předchozího intervalu = rozdíl timestampů
   if (self->cap_last_ts_us_ != 0) {
-    if (rising) {  // LOW -> HIGH, kontrola délky LOW
+    const uint32_t dur_us = ts_us - self->cap_last_ts_us_;
+    const bool rising = (edata->cap_edge & MCPWM_CAPTURE_EDGE_POS) != 0;
+    const bool falling = (edata->cap_edge & MCPWM_CAPTURE_EDGE_NEG) != 0;
+
+    if (rising) {
       if (dur_us >= self->min_low_us_) {
         self->pulse_state_.latched_ = false;
       }
-    } else if (falling) {  // HIGH -> LOW, kontrola délky HIGH
+    } else if (falling) {
       if (dur_us >= self->min_high_us_) {
         self->pulse_state_.latched_ = true;
         self->set_->last_detected_edge_us_ = ts_us;
@@ -380,12 +374,8 @@ bool IRAM_ATTR PulseMeterSensor::mcpwm_cap_cb_(mcpwm_cap_channel_handle_t, const
   }
 
   self->cap_last_ts_us_ = ts_us;
-  if (rising)
-    self->cap_last_level_high_ = true;
-  if (falling)
-    self->cap_last_level_high_ = false;
 
-  return true;  // OK
+  return true;
 }
 #endif
 
