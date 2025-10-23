@@ -20,10 +20,6 @@
 #include "driver/rmt_rx.h"
 #endif
 
-#if __has_include("driver/mcpwm_cap.h")
-#include "driver/mcpwm_cap.h"
-#endif
-
 #ifndef LIKELY
 #define LIKELY(x) (__builtin_expect(!!(x), 1))
 #endif
@@ -71,11 +67,6 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   static bool IRAM_ATTR rmt_rx_done_cb_(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata,
                                         void *user_ctx);
-#endif
-
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
-  static bool IRAM_ATTR mcpwm_cap_cb_(mcpwm_cap_channel_handle_t chan, const mcpwm_capture_event_data_t *edata,
-                                      void *user_ctx);
 #endif
 
   void update_hysteresis_defaults_() {
@@ -158,16 +149,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   rmt_receive_config_t rmt_rx_cfg_{};
   volatile const rmt_symbol_word_t *rmt_recv_symbols_ = nullptr;
   volatile size_t rmt_recv_count_ = 0;
-  uint32_t rmt_resolution_hz_ = 1000000UL;
-#endif
-
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
-  bool use_mcpwm_ = false;
-  mcpwm_capture_timer_handle_t cap_timer_{nullptr};
-  mcpwm_cap_channel_handle_t cap_chan_{nullptr};
-  uint32_t cap_resolution_hz_ = 1000000UL;
-  uint32_t cap_last_ts_us_ = 0;
-  bool cap_last_level_high_ = false;
+  uint32_t rmt_resolution_hz_ = 1000000UL;  // 1 us
 #endif
 };
 
