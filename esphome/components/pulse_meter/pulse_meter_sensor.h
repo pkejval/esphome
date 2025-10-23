@@ -20,6 +20,10 @@
 #include "driver/rmt_rx.h"
 #endif
 
+#if __has_include("driver/mcpwm_cap.h")
+#include "driver/mcpwm_cap.h"
+#endif
+
 #ifndef LIKELY
 #define LIKELY(x) (__builtin_expect(!!(x), 1))
 #endif
@@ -64,10 +68,14 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   static void IRAM_ATTR edge_intr(PulseMeterSensor *sensor);
   static void IRAM_ATTR pulse_intr(PulseMeterSensor *sensor);
 
-  // RMT callback (ISR context)
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   static bool IRAM_ATTR rmt_rx_done_cb_(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata,
                                         void *user_ctx);
+#endif
+
+#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
+  static bool IRAM_ATTR mcpwm_cap_cb_(mcpwm_cap_channel_handle_t chan, const mcpwm_capture_event_data_t *edata,
+                                      void *user_ctx);
 #endif
 
   void update_hysteresis_defaults_() {
@@ -75,10 +83,9 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
     this->min_high_us_ = (this->filter_us_ * 6U) / 5U;  // 1.2x
   }
 
-  // Adaptive scheduling (3)
+  // Adaptivní plánování timeout kontrol
   inline void update_period_estimate_(uint32_t delta_us, uint32_t count) {
-    // EMA na periodu jedné hrany (delta/count)
-    const float w = 0.25f;  // rychlejší reakce, pořád stabilní
+    const float w = 0.25f;
     const float p = float(delta_us) / float(count);
     if (this->period_estimate_us_ <= 0.0f)
       this->period_estimate_us_ = p;
@@ -87,7 +94,6 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   }
 
   inline void plan_next_check_(uint32_t now) {
-    // Další „lehkou“ kontrolu: max(timeout/4, 2× odhad periody), ale nikdy později než hard-timeout
     uint32_t soft_gap = this->timeout_us_ / 4U;
     if (this->period_estimate_us_ > 0.0f) {
       const uint32_t two_periods = (uint32_t) (2.0f * this->period_estimate_us_);
@@ -141,23 +147,30 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   uint32_t min_low_us_ = 0;
   uint32_t min_high_us_ = 0;
 
-  // Period estimate for adaptive scheduling (3)
   float period_estimate_us_ = 0.0f;
 
 #if defined(ESP_IDF_VERSION) && __has_include("driver/gpio_filter.h")
   gpio_glitch_filter_handle_t glitch_filter_{nullptr};
 #endif
 
-  // RMT backend (5)
+  // RMT backend
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   bool use_rmt_ = false;
   rmt_channel_handle_t rmt_rx_channel_{nullptr};
   rmt_receive_config_t rmt_rx_cfg_{};
-  // Buffer předaný driverem; lze číst v loopu, než znovu spustíme rmt_receive()
   volatile const rmt_symbol_word_t *rmt_recv_symbols_ = nullptr;
   volatile size_t rmt_recv_count_ = 0;
-  // Rozlišení RMT v Hz (1 MHz = 1 us)
-  uint32_t rmt_resolution_hz_ = 1000000UL;
+  uint32_t rmt_resolution_hz_ = 1000000UL;  // 1 us
+#endif
+
+  // MCPWM Capture backend
+#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
+  bool use_mcpwm_ = false;
+  mcpwm_cap_timer_handle_t cap_timer_{nullptr};
+  mcpwm_cap_channel_handle_t cap_chan_{nullptr};
+  uint32_t cap_resolution_hz_ = 1000000UL;  // 1 us
+  uint32_t cap_last_ts_us_ = 0;
+  bool cap_last_level_high_ = false;
 #endif
 };
 
