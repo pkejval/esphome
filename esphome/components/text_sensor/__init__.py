@@ -141,6 +141,11 @@ async def distinct_filter_to_code(config, filter_id):
     return cg.new_Pvariable(filter_id)
 
 
+@FILTER_REGISTRY.register("distinct", DistinctFilter, {})
+async def distinct_filter_to_code(config, filter_id):
+    return cg.new_Pvariable(filter_id)
+
+
 validate_device_class = cv.one_of(*DEVICE_CLASSES, lower=True, space="_")
 
 _TEXT_SENSOR_SCHEMA = (
