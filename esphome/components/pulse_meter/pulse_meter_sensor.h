@@ -83,7 +83,6 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
     this->min_high_us_ = (this->filter_us_ * 6U) / 5U;  // 1.2x
   }
 
-  // Adaptivní plánování timeout kontrol
   inline void update_period_estimate_(uint32_t delta_us, uint32_t count) {
     const float w = 0.25f;
     const float p = float(delta_us) / float(count);
@@ -153,22 +152,20 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   gpio_glitch_filter_handle_t glitch_filter_{nullptr};
 #endif
 
-  // RMT backend
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   bool use_rmt_ = false;
   rmt_channel_handle_t rmt_rx_channel_{nullptr};
   rmt_receive_config_t rmt_rx_cfg_{};
   volatile const rmt_symbol_word_t *rmt_recv_symbols_ = nullptr;
   volatile size_t rmt_recv_count_ = 0;
-  uint32_t rmt_resolution_hz_ = 1000000UL;  // 1 us
+  uint32_t rmt_resolution_hz_ = 1000000UL;
 #endif
 
-  // MCPWM Capture backend
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
   bool use_mcpwm_ = false;
-  mcpwm_cap_timer_handle_t cap_timer_{nullptr};
+  mcpwm_capture_timer_handle_t cap_timer_{nullptr};
   mcpwm_cap_channel_handle_t cap_chan_{nullptr};
-  uint32_t cap_resolution_hz_ = 1000000UL;  // 1 us
+  uint32_t cap_resolution_hz_ = 1000000UL;
   uint32_t cap_last_ts_us_ = 0;
   bool cap_last_level_high_ = false;
 #endif
