@@ -32,82 +32,30 @@ void PulseMeterSensor::setup() {
   this->pin_->setup();
   this->isr_pin_ = pin_->to_isr();
 
-  const uint32_t now = micros();
-  this->last_processed_edge_us_ = now;
-  this->next_timeout_check_us_ = now + this->timeout_us_;
-  this->new_event_ = false;
-  this->period_estimate_us_ = 0.0f;
+  // Set the last processed edge to now for the first timeout
+  this->last_processed_edge_us_ = micros();
 
-  if (this->min_low_us_ == 0 && this->min_high_us_ == 0) {
-    this->update_hysteresis_defaults_();
-  }
-
-#if defined(ESP_IDF_VERSION) && __has_include("driver/gpio_filter.h")
-#if (ESP_IDF_VERSION_MAJOR >= 5)
-#if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) || \
-    defined(CONFIG_IDF_TARGET_ESP32C6)
-  {
-    gpio_glitch_filter_config_t cfg{};
-    cfg.gpio_num = static_cast<gpio_num_t>(this->pin_->get_pin());
-    cfg.clk_src = GPIO_GLITCH_FILTER_CLK_SRC_DEFAULT;
-    const uint32_t ns = (uint32_t) (this->filter_us_ * 1000ULL);
-    cfg.window_thres_ns = ns > 0 ? ns : 0;
-    if (ns > 0 && gpio_new_glitch_filter(&cfg, &this->glitch_filter_) == ESP_OK) {
-      gpio_glitch_filter_enable(this->glitch_filter_);
-    } else {
-      this->glitch_filter_ = nullptr;
-    }
-  }
-#endif
-#endif
-#endif
-
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
-  if (this->filter_mode_ == FILTER_PULSE) {
-    rmt_rx_channel_config_t ch_cfg{};
-    ch_cfg.gpio_num = (gpio_num_t) this->pin_->get_pin();
-    ch_cfg.clk_src = RMT_CLK_SRC_DEFAULT;
-    ch_cfg.resolution_hz = this->rmt_resolution_hz_;
-    ch_cfg.mem_block_symbols = 512;
-    if (rmt_new_rx_channel(&ch_cfg, &this->rmt_rx_channel_) == ESP_OK && this->rmt_rx_channel_) {
-      rmt_rx_event_callbacks_t cbs{};
-      cbs.on_recv_done = &PulseMeterSensor::rmt_rx_done_cb_;
-      if (rmt_rx_register_event_callbacks(this->rmt_rx_channel_, &cbs, this) == ESP_OK) {
-        rmt_receive_config_t rx_cfg{};
-        rx_cfg.signal_range_min_ns = (uint32_t) (this->filter_us_ * 1000ULL);
-        const uint32_t max_ns = (this->timeout_us_ > 0 ? this->timeout_us_ : 1000000UL) * 1000UL;
-        rx_cfg.signal_range_max_ns = max_ns;
-        this->rmt_rx_cfg_ = rx_cfg;
-        if (rmt_enable(this->rmt_rx_channel_) == ESP_OK &&
-            rmt_receive(this->rmt_rx_channel_, nullptr, 0, &this->rmt_rx_cfg_) == ESP_OK) {
-          this->use_rmt_ = true;
-        }
-      }
-    }
-  }
-#endif
-
-  if (
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
-      !this->use_rmt_ &&
-#endif
-      true) {
-#if (defined(portNUM_PROCESSORS) && (portNUM_PROCESSORS > 1))
-    xTaskCreatePinnedToCore(PulseMeterSensor::attach_isr_task_, "pm_attach_isr", 2048, this, 20, nullptr, 1);
-#else
-    if (this->filter_mode_ == FILTER_EDGE) {
-      this->pin_->attach_interrupt(PulseMeterSensor::edge_intr, this, gpio::INTERRUPT_RISING_EDGE);
-    } else {
-      this->pulse_state_.last_pin_val_ = this->isr_pin_.digital_read();
-      this->pulse_state_.latched_ = this->pulse_state_.last_pin_val_;
-      this->pin_->attach_interrupt(PulseMeterSensor::pulse_intr, this, gpio::INTERRUPT_ANY_EDGE);
-    }
-#endif
+  if (this->filter_mode_ == FILTER_EDGE) {
+    this->pin_->attach_interrupt(PulseMeterSensor::edge_intr, this, gpio::INTERRUPT_RISING_EDGE);
+  } else if (this->filter_mode_ == FILTER_PULSE) {
+    // Set the pin value to the current value to avoid a false edge
+    this->pulse_state_.last_pin_val_ = this->isr_pin_.digital_read();
+    this->pulse_state_.latched_ = this->pulse_state_.last_pin_val_;
+    this->pin_->attach_interrupt(PulseMeterSensor::pulse_intr, this, gpio::INTERRUPT_ANY_EDGE);
   }
 }
 
 void PulseMeterSensor::loop() {
   const uint32_t now = micros();
+
+  // Reset the count in get before we pass it back to the ISR as set
+  this->get_->count_ = 0;
+
+  // Swap out set and get to get the latest state from the ISR
+  // The ISR could interrupt on any of these lines and the results would be consistent
+  auto *temp = this->set_;
+  this->set_ = this->get_;
+  this->get_ = temp;
 
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   if (this->use_rmt_) {
@@ -190,14 +138,13 @@ void PulseMeterSensor::loop() {
 
   if (this->peeked_edge_ && cnt > 0) {
     this->peeked_edge_ = false;
-    this->get_->count_ = cnt - 1;
+    this->get_->count_ = this->get_->count_ - 1;
   }
 
   if (trise != tdet && (now - trise) >= this->filter_us_) {
     this->peeked_edge_ = true;
-    this->get_->last_detected_edge_us_ = trise;
+    this->get_->last_detected_edge_us_ = this->get_->last_rising_edge_us_;
     this->get_->count_ = this->get_->count_ + 1;
-    had_event = true;
   }
 
   if (LIKELY(this->get_->count_ > 0)) {
@@ -288,43 +235,32 @@ void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
     set.last_detected_edge_us_ = now;
     set.last_rising_edge_us_ = now;
     set.count_ = set.count_ + 1;
-    sensor->new_event_ = true;
-    sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
   }
 }
 
 void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   const uint32_t now = micros();
-  if (UNLIKELY(now < sensor->coalesce_until_us_)) {
-    sensor->pulse_state_.last_intr_ = now;
-    sensor->pulse_state_.last_pin_val_ = sensor->isr_pin_.digital_read();
-    return;
+  const bool pin_val = sensor->isr_pin_.digital_read();
+  auto &state = sensor->pulse_state_;
+  auto &set = *sensor->set_;
+
+  // Filter length has passed since the last interrupt
+  const bool length = now - state.last_intr_ >= sensor->filter_us_;
+
+  if (length && state.latched_ && !state.last_pin_val_) {  // Long enough low edge
+    state.latched_ = false;
+  } else if (length && !state.latched_ && state.last_pin_val_) {  // Long enough high edge
+    state.latched_ = true;
+    set.last_detected_edge_us_ = state.last_intr_;
+    set.count_ = set.count_ + 1;
   }
 
   const bool pin_val = sensor->isr_pin_.digital_read();
   auto &st = sensor->pulse_state_;
   auto &set = *sensor->set_;
 
-  const bool long_enough = (now - st.last_intr_) >= sensor->filter_us_;
-
-  if (long_enough && st.latched_ && !st.last_pin_val_) {
-    if ((now - st.last_intr_) >= sensor->min_low_us_) {
-      st.latched_ = false;
-    }
-  } else if (long_enough && !st.latched_ && st.last_pin_val_) {
-    if ((now - st.last_intr_) >= sensor->min_high_us_) {
-      st.latched_ = true;
-      set.last_detected_edge_us_ = st.last_intr_;
-      set.count_ = set.count_ + 1;
-      sensor->new_event_ = true;
-      sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
-    }
-  }
-
-  set.last_rising_edge_us_ = (!st.latched_ && pin_val) ? now : set.last_detected_edge_us_;
-
-  st.last_intr_ = now;
-  st.last_pin_val_ = pin_val;
+  state.last_intr_ = now;
+  state.last_pin_val_ = pin_val;
 }
 
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
