@@ -157,5 +157,15 @@ class MapFilter : public Filter {
   FixedVector<Substitution> mappings_;
 };
 
+/// A filter that passes through only when the value changes (suppresses duplicates)
+class DistinctFilter : public Filter {
+ public:
+  optional<std::string> new_value(std::string value) override;
+
+ protected:
+  bool has_last_{false};
+  std::string last_;
+};
+
 }  // namespace text_sensor
 }  // namespace esphome
