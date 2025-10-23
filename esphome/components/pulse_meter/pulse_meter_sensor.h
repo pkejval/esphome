@@ -61,9 +61,8 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   static void IRAM_ATTR pulse_intr(PulseMeterSensor *sensor);
 
   void update_hysteresis_defaults_() {
-    // 0.8x a 1.2x bez float: 4/5 a 6/5
-    this->min_low_us_ = (this->filter_us_ * 4U) / 5U;
-    this->min_high_us_ = (this->filter_us_ * 6U) / 5U;
+    this->min_low_us_ = (this->filter_us_ * 4U) / 5U;   // 0.8x
+    this->min_high_us_ = (this->filter_us_ * 6U) / 5U;  // 1.2x
   }
 
   InternalGPIOPin *pin_{nullptr};
@@ -84,7 +83,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
     uint32_t count_ = 0;
   } __attribute__((packed, aligned(4)));
 
-  DRAM_ATTR State state_[2];
+  State state_[2];
   volatile State *set_ = state_;
   volatile State *get_ = state_ + 1;
 
@@ -93,14 +92,14 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   struct EdgeState {
     uint32_t last_sent_edge_us_ = 0;
   };
-  DRAM_ATTR EdgeState edge_state_{};
+  EdgeState edge_state_{};
 
   struct PulseState {
     uint32_t last_intr_ = 0;
     bool latched_ = false;
     bool last_pin_val_ = false;
   };
-  DRAM_ATTR PulseState pulse_state_{};
+  PulseState pulse_state_{};
 
   volatile bool new_event_ = false;
   uint32_t next_timeout_check_us_ = 0;

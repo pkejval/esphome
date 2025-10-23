@@ -98,10 +98,10 @@ void PulseMeterSensor::loop() {
       case MeterState::RUNNING: {
         const uint32_t delta_us = this->get_->last_detected_edge_us_ - this->last_processed_edge_us_;
         const float pulse_width_us = delta_us / float(this->get_->count_);
-        if (UNLIKELY(esp_log_level_get(TAG) >= ESPLOG_VERBOSE)) {
-          ESP_LOGV(TAG, "New pulse, delta: %" PRIu32 " us, count: %" PRIu32 ", width: %.5f us", delta_us,
-                   this->get_->count_, pulse_width_us);
-        }
+#if (ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE)
+        ESP_LOGV(TAG, "New pulse, delta: %" PRIu32 " us, count: %" PRIu32 ", width: %.5f us", delta_us,
+                 this->get_->count_, pulse_width_us);
+#endif
         this->publish_state((60.0f * 1000000.0f) / pulse_width_us);
       } break;
     }
