@@ -62,7 +62,7 @@ void PulseMeterSensor::setup() {
 #endif
 #endif
 
-// RMT backend (PULSE)
+// RMT backend (PULSE) – pokud je k dispozici
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   if (this->filter_mode_ == FILTER_PULSE) {
     rmt_rx_channel_config_t ch_cfg{};
@@ -88,44 +88,10 @@ void PulseMeterSensor::setup() {
   }
 #endif
 
-// MCPWM Capture backend (fallback za RMT)
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
-  if (!this->use_rmt_ && this->filter_mode_ == FILTER_PULSE) {
-    mcpwm_capture_timer_config_t tcfg{};
-    tcfg.group_id = 0;
-    tcfg.clk_src = MCPWM_CAPTURE_CLK_SRC_DEFAULT;
-    tcfg.resolution_hz = this->cap_resolution_hz_;
-    if (mcpwm_new_capture_timer(&tcfg, &this->cap_timer_) == ESP_OK && this->cap_timer_) {
-      mcpwm_capture_channel_config_t ccfg{};
-      ccfg.gpio_num = (gpio_num_t) this->pin_->get_pin();
-      ccfg.prescale = 1;
-      ccfg.flags.pull_up = 1;
-      ccfg.flags.invert_cap_signal = 0;
-      if (mcpwm_new_capture_channel(this->cap_timer_, &ccfg, &this->cap_chan_) == ESP_OK && this->cap_chan_) {
-        mcpwm_capture_event_callbacks_t cbs{};
-        cbs.on_cap = &PulseMeterSensor::mcpwm_cap_cb_;
-        if (mcpwm_capture_channel_register_event_callbacks(this->cap_chan_, &cbs, this) == ESP_OK &&
-            mcpwm_capture_channel_enable(this->cap_chan_) == ESP_OK &&
-            mcpwm_capture_timer_enable(this->cap_timer_) == ESP_OK) {
-          mcpwm_capture_timer_start(this->cap_timer_);
-          mcpwm_capture_edge_t edges = (mcpwm_capture_edge_t) (MCPWM_CAPTURE_EDGE_POS | MCPWM_CAPTURE_EDGE_NEG);
-          mcpwm_capture_channel_start(this->cap_chan_, edges);
-          this->use_mcpwm_ = true;
-          this->cap_last_ts_us_ = 0;
-          this->cap_last_level_high_ = this->isr_pin_.digital_read();
-        }
-      }
-    }
-  }
-#endif
-
-  // Fallback na GPIO ISR
+  // Fallback na GPIO ISR (pokud neběží RMT nebo je EDGE mód)
   if (
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
       !this->use_rmt_ &&
-#endif
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
-      !this->use_mcpwm_ &&
 #endif
       true) {
     if (this->filter_mode_ == FILTER_EDGE) {
@@ -302,10 +268,6 @@ void PulseMeterSensor::dump_config() {
   if (this->filter_mode_ == FILTER_PULSE)
     ESP_LOGCONFIG(TAG, "  RMT backend: %s", this->use_rmt_ ? "enabled" : "not available");
 #endif
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
-  if (this->filter_mode_ == FILTER_PULSE)
-    ESP_LOGCONFIG(TAG, "  MCPWM capture backend: %s", this->use_mcpwm_ ? "enabled" : "not available");
-#endif
 }
 
 void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
@@ -334,11 +296,11 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   const bool long_enough = (now - st.last_intr_) >= sensor->filter_us_;
 
   if (long_enough && st.latched_ && !st.last_pin_val_) {
-    if ((now - st.last_intr_) >= self->min_low_us_) {
+    if ((now - st.last_intr_) >= sensor->min_low_us_) {
       st.latched_ = false;
     }
   } else if (long_enough && !st.latched_ && st.last_pin_val_) {
-    if ((now - st.last_intr_) >= self->min_high_us_) {
+    if ((now - st.last_intr_) >= sensor->min_high_us_) {
       st.latched_ = true;
       set.last_detected_edge_us_ = st.last_intr_;
       set.count_ = set.count_ + 1;
@@ -360,39 +322,6 @@ bool IRAM_ATTR PulseMeterSensor::rmt_rx_done_cb_(rmt_channel_handle_t, const rmt
   self->rmt_recv_count_ = edata->num_symbols;
   self->new_event_ = true;
   return false;
-}
-#endif
-
-#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/mcpwm_cap.h")
-bool IRAM_ATTR PulseMeterSensor::mcpwm_cap_cb_(mcpwm_cap_channel_handle_t, const mcpwm_capture_event_data_t *edata,
-                                               void *user_ctx) {
-  auto *self = static_cast<PulseMeterSensor *>(user_ctx);
-
-  const uint32_t ts_us = (uint32_t) (edata->cap_value);
-
-  if (self->cap_last_ts_us_ != 0) {
-    const uint32_t dur_us = ts_us - self->cap_last_ts_us_;
-    const bool rising = (edata->cap_edge & MCPWM_CAPTURE_EDGE_POS) != 0;
-    const bool falling = (edata->cap_edge & MCPWM_CAPTURE_EDGE_NEG) != 0;
-
-    if (rising) {
-      if (dur_us >= self->min_low_us_) {
-        self->pulse_state_.latched_ = false;
-      }
-    } else if (falling) {
-      if (dur_us >= self->min_high_us_) {
-        self->pulse_state_.latched_ = true;
-        self->set_->last_detected_edge_us_ = ts_us;
-        self->set_->last_rising_edge_us_ = ts_us;
-        self->set_->count_ = self->set_->count_ + 1;
-        self->new_event_ = true;
-      }
-    }
-  }
-
-  self->cap_last_ts_us_ = ts_us;
-
-  return true;
 }
 #endif
 
