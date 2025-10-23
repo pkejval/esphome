@@ -62,7 +62,6 @@ void PulseMeterSensor::setup() {
 #endif
 #endif
 
-// RMT backend (PULSE) – pokud je k dispozici
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
   if (this->filter_mode_ == FILTER_PULSE) {
     rmt_rx_channel_config_t ch_cfg{};
@@ -88,12 +87,14 @@ void PulseMeterSensor::setup() {
   }
 #endif
 
-  // Fallback na GPIO ISR (pokud neběží RMT nebo je EDGE mód)
   if (
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5) && __has_include("driver/rmt_rx.h")
       !this->use_rmt_ &&
 #endif
       true) {
+#if (defined(portNUM_PROCESSORS) && (portNUM_PROCESSORS > 1))
+    xTaskCreatePinnedToCore(PulseMeterSensor::attach_isr_task_, "pm_attach_isr", 2048, this, 20, nullptr, 1);
+#else
     if (this->filter_mode_ == FILTER_EDGE) {
       this->pin_->attach_interrupt(PulseMeterSensor::edge_intr, this, gpio::INTERRUPT_RISING_EDGE);
     } else {
@@ -101,6 +102,7 @@ void PulseMeterSensor::setup() {
       this->pulse_state_.latched_ = this->pulse_state_.last_pin_val_;
       this->pin_->attach_interrupt(PulseMeterSensor::pulse_intr, this, gpio::INTERRUPT_ANY_EDGE);
     }
+#endif
   }
 }
 
@@ -179,18 +181,21 @@ void PulseMeterSensor::loop() {
   this->set_ = this->get_;
   this->get_ = temp;
 
+  // snapshot z volatile do lokálů (méně readů)
+  const uint32_t cnt = this->get_->count_;
+  const uint32_t tdet = this->get_->last_detected_edge_us_;
+  const uint32_t trise = this->get_->last_rising_edge_us_;
   bool had_event = this->new_event_;
   this->new_event_ = false;
 
-  if (this->peeked_edge_ && this->get_->count_ > 0) {
+  if (this->peeked_edge_ && cnt > 0) {
     this->peeked_edge_ = false;
-    this->get_->count_ = this->get_->count_ - 1;
+    this->get_->count_ = cnt - 1;
   }
 
-  if (this->get_->last_rising_edge_us_ != this->get_->last_detected_edge_us_ &&
-      (now - this->get_->last_rising_edge_us_) >= this->filter_us_) {
+  if (trise != tdet && (now - trise) >= this->filter_us_) {
     this->peeked_edge_ = true;
-    this->get_->last_detected_edge_us_ = this->get_->last_rising_edge_us_;
+    this->get_->last_detected_edge_us_ = trise;
     this->get_->count_ = this->get_->count_ + 1;
     had_event = true;
   }
@@ -210,8 +215,8 @@ void PulseMeterSensor::loop() {
       case MeterState::RUNNING: {
         const uint32_t delta_us = this->get_->last_detected_edge_us_ - this->last_processed_edge_us_;
         if (delta_us > 0) {
-          const float pulse_width_us = delta_us / float(this->get_->count_);
-          this->publish_state((60.0f * 1000000.0f) / pulse_width_us);
+          const float rpm = (60000000.0f * float(this->get_->count_)) / float(delta_us);
+          this->publish_state(rpm);
           this->update_period_estimate_(delta_us, this->get_->count_);
         }
       } break;
@@ -284,11 +289,18 @@ void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
     set.last_rising_edge_us_ = now;
     set.count_ = set.count_ + 1;
     sensor->new_event_ = true;
+    sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
   }
 }
 
 void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   const uint32_t now = micros();
+  if (UNLIKELY(now < sensor->coalesce_until_us_)) {
+    sensor->pulse_state_.last_intr_ = now;
+    sensor->pulse_state_.last_pin_val_ = sensor->isr_pin_.digital_read();
+    return;
+  }
+
   const bool pin_val = sensor->isr_pin_.digital_read();
   auto &st = sensor->pulse_state_;
   auto &set = *sensor->set_;
@@ -305,6 +317,7 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
       set.last_detected_edge_us_ = st.last_intr_;
       set.count_ = set.count_ + 1;
       sensor->new_event_ = true;
+      sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
     }
   }
 
