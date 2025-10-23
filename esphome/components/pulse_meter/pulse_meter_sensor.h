@@ -20,6 +20,11 @@
 #include "driver/rmt_rx.h"
 #endif
 
+#if __has_include("freertos/FreeRTOS.h")
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
+
 #ifndef LIKELY
 #define LIKELY(x) (__builtin_expect(!!(x), 1))
 #endif
@@ -69,9 +74,14 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
                                         void *user_ctx);
 #endif
 
+#if (defined(portNUM_PROCESSORS) && (portNUM_PROCESSORS > 1))
+  static void attach_isr_task_(void *arg);
+#endif
+
   void update_hysteresis_defaults_() {
     this->min_low_us_ = (this->filter_us_ * 4U) / 5U;   // 0.8x
     this->min_high_us_ = (this->filter_us_ * 6U) / 5U;  // 1.2x
+    this->coalesce_min_us_ = (this->min_low_us_ < this->min_high_us_) ? this->min_low_us_ : this->min_high_us_;
   }
 
   inline void update_period_estimate_(uint32_t delta_us, uint32_t count) {
@@ -151,6 +161,10 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   volatile size_t rmt_recv_count_ = 0;
   uint32_t rmt_resolution_hz_ = 1000000UL;  // 1 us
 #endif
+
+  // Soft coalescing okno pro PULSE ISR
+  volatile uint32_t coalesce_until_us_ = 0;
+  uint32_t coalesce_min_us_ = 0;
 };
 
 }  // namespace pulse_meter
