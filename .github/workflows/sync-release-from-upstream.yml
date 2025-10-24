@@ -16,7 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TARGET_BRANCH: release
+  TARGET_BRANCH: my_mods
+  UPSTREAM_BRANCH: release
   UPSTREAM_OWNER: esphome
   UPSTREAM_REPO: esphome
   GIT_AUTHOR_NAME: "github-actions[bot]"
@@ -48,7 +49,7 @@ jobs:
           elif git ls-remote --exit-code --heads origin "${TARGET_BRANCH}" >/dev/null 2>&1; then
             git checkout -b "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
           else
-            git checkout -b "${TARGET_BRANCH}" "upstream/${TARGET_BRANCH}"
+            git checkout -b "${TARGET_BRANCH}" "upstream/${UPSTREAM_BRANCH}"
           fi
 
       - name: Configure Git identity
@@ -61,23 +62,23 @@ jobs:
         run: |
           git fetch upstream --prune
           set +e
-          BEHIND=$(git rev-list --left-right --count "HEAD...upstream/${TARGET_BRANCH}" | awk '{print $2}')
-          AHEAD=$(git rev-list --left-right --count "HEAD...upstream/${TARGET_BRANCH}" | awk '{print $1}')
+          BEHIND=$(git rev-list --left-right --count "HEAD...upstream/${UPSTREAM_BRANCH}" | awk '{print $2}')
+          AHEAD=$(git rev-list --left-right --count "HEAD...upstream/${UPSTREAM_BRANCH}" | awk '{print $1}')
           set -e
           echo "behind=${BEHIND:-0}" >> "$GITHUB_OUTPUT"
           echo "ahead=${AHEAD:-0}"  >> "$GITHUB_OUTPUT"
-          echo "We are ahead=${AHEAD:-0}, behind=${BEHIND:-0} vs upstream/${TARGET_BRANCH}"
+          echo "We are ahead=${AHEAD:-0}, behind=${BEHIND:-0} vs upstream/${UPSTREAM_BRANCH}"
 
       - name: Skip if up to date
         if: steps.aheadbehind.outputs.behind == '0'
-        run: echo "Fork branch is up-to-date with upstream/${TARGET_BRANCH}. Nothing to do."
+        run: echo "Fork branch is up-to-date with upstream/${UPSTREAM_BRANCH}. Nothing to do."
 
-      - name: Rebase on upstream/${{ env.TARGET_BRANCH }}
+      - name: Rebase on upstream branch
         if: steps.aheadbehind.outputs.behind != '0'
         run: |
           set -e
           git stash push -u -m "pre-rebase-$(date +%s)" || true
-          if ! git rebase "upstream/${TARGET_BRANCH}"; then
+          if ! git rebase "upstream/${UPSTREAM_BRANCH}"; then
             echo "::error::Rebase conflict. Aborting to avoid breaking the branch."
             git rebase --abort || true
             git stash pop || true
@@ -100,6 +101,6 @@ jobs:
         run: |
           echo "### Sync summary" >> $GITHUB_STEP_SUMMARY
           echo "- Branch: \`${TARGET_BRANCH}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Upstream: \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Upstream: \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Ahead: \`${{ steps.aheadbehind.outputs.ahead }}\`, Behind: \`${{ steps.aheadbehind.outputs.behind }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Result: $([[ '${{ job.status }}' == 'success' ]] && echo '✅ success' || echo '❌ needs attention (likely conflict)')" >> $GITHUB_STEP_SUMMARY
+          echo "- Result: $([[ '${{ job.status }}' == 'success' ]] && echo 'success' || echo 'needs attention (likely conflict)')" >> $GITHUB_STEP_SUMMARY
