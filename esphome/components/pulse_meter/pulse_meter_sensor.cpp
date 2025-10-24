@@ -181,7 +181,6 @@ void PulseMeterSensor::loop() {
   this->set_ = this->get_;
   this->get_ = temp;
 
-  // snapshot z volatile do lokálů (méně readů)
   const uint32_t cnt = this->get_->count_;
   const uint32_t tdet = this->get_->last_detected_edge_us_;
   const uint32_t trise = this->get_->last_rising_edge_us_;
@@ -277,7 +276,7 @@ void PulseMeterSensor::dump_config() {
 
 void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
   const uint32_t now = micros();
-  if (UNLIKELY(now < sensor->coalesce_until_us_))
+  if (sensor->coalesce_min_us_ > 0 && before_deadline_(now, sensor->coalesce_until_us_))
     return;
 
   auto &state = sensor->edge_state_;
@@ -289,13 +288,13 @@ void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
     set.last_rising_edge_us_ = now;
     set.count_ = set.count_ + 1;
     sensor->new_event_ = true;
-    sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
+    sensor->coalesce_until_us_ = (sensor->coalesce_min_us_ > 0) ? (now + sensor->coalesce_min_us_) : 0;
   }
 }
 
 void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
   const uint32_t now = micros();
-  if (UNLIKELY(now < sensor->coalesce_until_us_)) {
+  if (sensor->coalesce_min_us_ > 0 && before_deadline_(now, sensor->coalesce_until_us_)) {
     sensor->pulse_state_.last_intr_ = now;
     sensor->pulse_state_.last_pin_val_ = sensor->isr_pin_.digital_read();
     return;
@@ -317,7 +316,7 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
       set.last_detected_edge_us_ = st.last_intr_;
       set.count_ = set.count_ + 1;
       sensor->new_event_ = true;
-      sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
+      sensor->coalesce_until_us_ = (sensor->coalesce_min_us_ > 0) ? (now + sensor->coalesce_min_us_) : 0;
     }
   }
 
