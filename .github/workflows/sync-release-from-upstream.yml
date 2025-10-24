@@ -1,0 +1,105 @@
+name: Sync release from upstream
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 */1 * * *"
+  repository_dispatch:
+    types: [upstream_update]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-release
+  cancel-in-progress: true
+
+env:
+  TARGET_BRANCH: release
+  UPSTREAM_OWNER: esphome
+  UPSTREAM_REPO: esphome
+  GIT_AUTHOR_NAME: "github-actions[bot]"
+  GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show remotes
+        run: git remote -v
+
+      - name: Add upstream remote
+        run: |
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream "https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPO}.git"
+          fi
+          git fetch upstream --prune
+
+      - name: Ensure local target branch exists
+        run: |
+          if git show-ref --verify --quiet "refs/heads/${TARGET_BRANCH}"; then
+            git checkout "${TARGET_BRANCH}"
+          elif git ls-remote --exit-code --heads origin "${TARGET_BRANCH}" >/dev/null 2>&1; then
+            git checkout -b "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+          else
+            git checkout -b "${TARGET_BRANCH}" "upstream/${TARGET_BRANCH}"
+          fi
+
+      - name: Configure Git identity
+        run: |
+          git config user.name  "${GIT_AUTHOR_NAME}"
+          git config user.email "${GIT_AUTHOR_EMAIL}"
+
+      - name: Detect if behind upstream
+        id: aheadbehind
+        run: |
+          git fetch upstream --prune
+          set +e
+          BEHIND=$(git rev-list --left-right --count "HEAD...upstream/${TARGET_BRANCH}" | awk '{print $2}')
+          AHEAD=$(git rev-list --left-right --count "HEAD...upstream/${TARGET_BRANCH}" | awk '{print $1}')
+          set -e
+          echo "behind=${BEHIND:-0}" >> "$GITHUB_OUTPUT"
+          echo "ahead=${AHEAD:-0}"  >> "$GITHUB_OUTPUT"
+          echo "We are ahead=${AHEAD:-0}, behind=${BEHIND:-0} vs upstream/${TARGET_BRANCH}"
+
+      - name: Skip if up to date
+        if: steps.aheadbehind.outputs.behind == '0'
+        run: echo "Fork branch is up-to-date with upstream/${TARGET_BRANCH}. Nothing to do."
+
+      - name: Rebase on upstream/${{ env.TARGET_BRANCH }}
+        if: steps.aheadbehind.outputs.behind != '0'
+        run: |
+          set -e
+          git stash push -u -m "pre-rebase-$(date +%s)" || true
+          if ! git rebase "upstream/${TARGET_BRANCH}"; then
+            echo "::error::Rebase conflict. Aborting to avoid breaking the branch."
+            git rebase --abort || true
+            git stash pop || true
+            exit 1
+          fi
+          git stash pop || true
+
+      - name: Push back to origin (force-with-lease)
+        if: steps.aheadbehind.outputs.behind != '0'
+        run: |
+          git status --porcelain
+          if [ -n "$(git status --porcelain)" ]; then
+            git push origin "${TARGET_BRANCH}" --force-with-lease
+          else
+            echo "No working tree changes to push."
+          fi
+
+      - name: Summarize
+        if: always()
+        run: |
+          echo "### Sync summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`${TARGET_BRANCH}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Upstream: \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Ahead: \`${{ steps.aheadbehind.outputs.ahead }}\`, Behind: \`${{ steps.aheadbehind.outputs.behind }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Result: $([[ '${{ job.status }}' == 'success' ]] && echo '✅ success' || echo '❌ needs attention (likely conflict)')" >> $GITHUB_STEP_SUMMARY
