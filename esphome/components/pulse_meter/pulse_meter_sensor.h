@@ -79,7 +79,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   static void attach_isr_task_(void *arg);
 #endif
 
-  // wrap-safe: vrátí true, pokud jsme stále PŘED deadlinem (now < deadline) i přes wrap micros()
+  // wrap-safe: true, pokud now < deadline i přes wrap micros()
   static inline bool IRAM_ATTR before_deadline_(uint32_t now, uint32_t deadline) {
     return (int32_t) (now - deadline) < 0;
   }
@@ -168,7 +168,8 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   uint32_t rmt_resolution_hz_ = 1000000UL;  // 1 us
 #endif
 
-  // Soft coalescing okno (wrap-safe deadline)
+  // Soft coalescing (pouze EDGE); wrap-safe deadline
+  bool coalesce_enabled_edge_ = true;
   volatile uint32_t coalesce_until_us_ = 0;
   uint32_t coalesce_min_us_ = 0;
 };

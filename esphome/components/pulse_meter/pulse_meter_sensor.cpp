@@ -38,6 +38,9 @@ void PulseMeterSensor::setup() {
   this->new_event_ = false;
   this->period_estimate_us_ = 0.0f;
 
+  // Coalescing jen pro EDGE
+  this->coalesce_enabled_edge_ = (this->filter_mode_ == FILTER_EDGE);
+
   if (this->min_low_us_ == 0 && this->min_high_us_ == 0) {
     this->update_hysteresis_defaults_();
   }
@@ -254,9 +257,12 @@ void PulseMeterSensor::dump_config() {
   LOG_PIN("  Pin: ", this->pin_);
   if (this->filter_mode_ == FILTER_EDGE) {
     ESP_LOGCONFIG(TAG, "  Filtering rising edges less than %" PRIu32 " us apart", this->filter_us_);
+    ESP_LOGCONFIG(TAG, "  ISR coalescing (EDGE): %s, window >= %" PRIu32 " us",
+                  this->coalesce_enabled_edge_ ? "on" : "off", this->coalesce_min_us_);
   } else {
     ESP_LOGCONFIG(TAG, "  Filtering pulses shorter than %" PRIu32 " us (low>=%" PRIu32 " us, high>=%" PRIu32 " us)",
                   this->filter_us_, this->min_low_us_, this->min_high_us_);
+    ESP_LOGCONFIG(TAG, "  ISR coalescing (PULSE): off");
   }
   ESP_LOGCONFIG(TAG, "  Assuming 0 pulses/min after not receiving a pulse for %" PRIu32 " s",
                 this->timeout_us_ / 1000000);
@@ -276,8 +282,10 @@ void PulseMeterSensor::dump_config() {
 
 void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
   const uint32_t now = micros();
-  if (sensor->coalesce_min_us_ > 0 && before_deadline_(now, sensor->coalesce_until_us_))
+  if (sensor->coalesce_enabled_edge_ && sensor->coalesce_min_us_ > 0 &&
+      before_deadline_(now, sensor->coalesce_until_us_)) {
     return;
+  }
 
   auto &state = sensor->edge_state_;
   auto &set = *sensor->set_;
@@ -288,17 +296,16 @@ void IRAM_ATTR PulseMeterSensor::edge_intr(PulseMeterSensor *sensor) {
     set.last_rising_edge_us_ = now;
     set.count_ = set.count_ + 1;
     sensor->new_event_ = true;
-    sensor->coalesce_until_us_ = (sensor->coalesce_min_us_ > 0) ? (now + sensor->coalesce_min_us_) : 0;
+
+    if (sensor->coalesce_enabled_edge_ && sensor->coalesce_min_us_ > 0) {
+      sensor->coalesce_until_us_ = now + sensor->coalesce_min_us_;
+    }
   }
 }
 
 void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
+  // POZOR: coalescing je pro PULSE vypnutý záměrně (mohl by odstřelit potřebné hrany)
   const uint32_t now = micros();
-  if (sensor->coalesce_min_us_ > 0 && before_deadline_(now, sensor->coalesce_until_us_)) {
-    sensor->pulse_state_.last_intr_ = now;
-    sensor->pulse_state_.last_pin_val_ = sensor->isr_pin_.digital_read();
-    return;
-  }
 
   const bool pin_val = sensor->isr_pin_.digital_read();
   auto &st = sensor->pulse_state_;
@@ -316,7 +323,6 @@ void IRAM_ATTR PulseMeterSensor::pulse_intr(PulseMeterSensor *sensor) {
       set.last_detected_edge_us_ = st.last_intr_;
       set.count_ = set.count_ + 1;
       sensor->new_event_ = true;
-      sensor->coalesce_until_us_ = (sensor->coalesce_min_us_ > 0) ? (now + sensor->coalesce_min_us_) : 0;
     }
   }
 
