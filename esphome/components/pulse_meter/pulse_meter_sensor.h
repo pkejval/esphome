@@ -56,6 +56,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   void set_pulse_hysteresis_us(uint32_t min_low_us, uint32_t min_high_us) {
     this->min_low_us_ = min_low_us;
     this->min_high_us_ = min_high_us;
+    this->coalesce_min_us_ = (this->min_low_us_ < this->min_high_us_) ? this->min_low_us_ : this->min_high_us_;
   }
 
   void set_total_pulses(uint32_t pulses);
@@ -77,6 +78,11 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
 #if (defined(portNUM_PROCESSORS) && (portNUM_PROCESSORS > 1))
   static void attach_isr_task_(void *arg);
 #endif
+
+  // wrap-safe: vrátí true, pokud jsme stále PŘED deadlinem (now < deadline) i přes wrap micros()
+  static inline bool IRAM_ATTR before_deadline_(uint32_t now, uint32_t deadline) {
+    return (int32_t) (now - deadline) < 0;
+  }
 
   void update_hysteresis_defaults_() {
     this->min_low_us_ = (this->filter_us_ * 4U) / 5U;   // 0.8x
@@ -162,7 +168,7 @@ class PulseMeterSensor : public sensor::Sensor, public Component {
   uint32_t rmt_resolution_hz_ = 1000000UL;  // 1 us
 #endif
 
-  // Soft coalescing okno pro PULSE ISR
+  // Soft coalescing okno (wrap-safe deadline)
   volatile uint32_t coalesce_until_us_ = 0;
   uint32_t coalesce_min_us_ = 0;
 };
