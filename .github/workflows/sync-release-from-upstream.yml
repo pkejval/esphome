@@ -73,28 +73,23 @@ jobs:
         if: steps.aheadbehind.outputs.behind == '0'
         run: echo "Fork branch is up-to-date with upstream/${UPSTREAM_BRANCH}. Nothing to do."
 
-      - name: Rebase on upstream branch
+      - name: Rebase on upstream branch (prefer local changes)
         if: steps.aheadbehind.outputs.behind != '0'
         run: |
           set -e
-          git stash push -u -m "pre-rebase-$(date +%s)" || true
-          if ! git rebase "upstream/${UPSTREAM_BRANCH}"; then
-            echo "::error::Rebase conflict. Aborting to avoid breaking the branch."
+          # Rebase our branch on top of upstream/release
+          # -X theirs => při konfliktu vezme změny z větve, kterou rebasujeme (my_mods)
+          if ! git rebase "upstream/${UPSTREAM_BRANCH}" -X theirs; then
+            echo "::error::Rebase conflict even with -X theirs. Aborting to avoid breaking the branch."
             git rebase --abort || true
-            git stash pop || true
             exit 1
           fi
-          git stash pop || true
 
       - name: Push back to origin (force-with-lease)
         if: steps.aheadbehind.outputs.behind != '0'
         run: |
-          git status --porcelain
-          if [ -n "$(git status --porcelain)" ]; then
-            git push origin "${TARGET_BRANCH}" --force-with-lease
-          else
-            echo "No working tree changes to push."
-          fi
+          # Po úspěšném rebase jsou commity přepsané, push musí proběhnout vždy
+          git push origin "${TARGET_BRANCH}" --force-with-lease
 
       - name: Summarize
         if: always()
