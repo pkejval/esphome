@@ -1,11 +1,11 @@
----
-name: Lock closed issues and PRs
+name: Lock closed issues and PRs (disabled in fork)
 
+# explicitně nespouštět nic
 on:
-  schedule:
-    - cron: "30 0 * * *"  # Run daily at 00:30 UTC
   workflow_dispatch:
 
 jobs:
-  lock:
-    uses: esphome/workflows/.github/workflows/lock.yml@main
+  disabled:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "This workflow is disabled in the fork."
