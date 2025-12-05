@@ -65,6 +65,7 @@ PrependFilter = text_sensor_ns.class_("PrependFilter", Filter)
 SubstituteFilter = text_sensor_ns.class_("SubstituteFilter", Filter)
 MapFilter = text_sensor_ns.class_("MapFilter", Filter)
 DistinctFilter = text_sensor_ns.class_("DistinctFilter", Filter)
+DistinctFilter = text_sensor_ns.class_("DistinctFilter", Filter)
 
 
 @FILTER_REGISTRY.register("lambda", LambdaFilter, cv.returning_lambda)
